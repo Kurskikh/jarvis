@@ -1,0 +1,119 @@
+[[commands]]
+id = "windows_minimize_all"
+type = "ahk"
+exe_path = "ahk/Roll up windows.ahk"
+sounds.ru = ["ok1", "ok2", "ok3"]
+
+phrases.ru = [
+    "сверни все окна",
+    "сверни окна",
+]
+
+
+
+[[commands]]
+id = "trash_empty"
+type = "ahk"
+exe_path = "ahk/Empty trash.ahk"
+sounds.ru = ["ok1", "ok2", "ok3"]
+
+phrases.ru = [
+    "очисти корзину",
+    "почисти корзину",
+    "очистка корзины",
+]
+
+
+
+[[commands]]
+id = "task_manager_open"
+type = "ahk"
+exe_path = "ahk/Task manager open.ahk"
+sounds.ru = ["ok1", "ok2", "ok3"]
+
+phrases.ru = [
+    "запусти диспетчер задач",
+    "открой диспетчер задач",
+    "диспетчер задач",
+]
+
+
+
+[[commands]]
+id = "screenshot_take"
+type = "ahk"
+exe_path = "ahk/screenshot.ahk"
+sounds.ru = ["ok1", "ok2", "ok3"]
+
+phrases.ru = [
+    "сделай скриншот",
+    "сделай снимок экрана",
+    "сними экран",
+]
+
+
+
+[[commands]]
+id = "computer_lock"
+type = "ahk"
+exe_path = "ahk/blocking.ahk"
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "заблокируй компьютер",
+    "заблокируй комп",
+]
+
+
+
+[[commands]]
+id = "computer_sleep"
+type = "ahk"
+exe_path = "ahk/sleep.ahk"
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "спящий режим",
+    "ждущий режим",
+    "иди поспи",
+]
+
+
+
+[[commands]]
+id = "clipboard_open"
+type = "ahk"
+exe_path = "ahk/clipboard.ahk"
+sounds.ru = ["ok1", "ok2", "ok3"]
+
+phrases.ru = [
+    "открой буфер обмена",
+    "покажи буфер обмена",
+    "запусти буфер обмена",
+    "буфер обмена",
+]
+
+
+
+[[commands]]
+id = "keyboard_layout_switch"
+type = "ahk"
+exe_path = "ahk/Set language.ahk"
+sounds.ru = ["ok1", "ok2", "ok3"]
+
+phrases.ru = [
+    "смени раскладку",
+    "поменяй раскладку",
+    "смени язык",
+    "поменяй язык",
+    "переключи на русский",
+    "переключи на английский",
+    "смени раскладку на русскую",
+    "поменяй раскладку на русскую",
+    "поменяй раскладку на английскую",
+    "смени раскладку на английскую",
+    "смени язык на русский",
+    "поменяй язык на русский",
+    "смени язык на английский",
+    "поменяй язык на английский",
+]
