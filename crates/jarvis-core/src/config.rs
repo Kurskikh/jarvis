@@ -132,11 +132,8 @@ pub const RUSTPOTTER_DEFAULT_CONFIG: Lazy<RustpotterConfig> = Lazy::new(|| {
     }
 });
 
-// PICOVOICE
+// COMMANDS
 pub const COMMANDS_PATH: &str = "resources/commands/";
-pub const KEYWORDS_PATH: &str = "resources/picovoice/keywords/";
-pub const DEFAULT_KEYWORD: &str = "jarvis_windows.ppn";
-pub const DEFAULT_SENSITIVITY: f32 = 1.0;
 
 // VOSK
 // pub const VOSK_MODEL_PATH: &str = const_concat!(PUBLIC_PATH, "/vosk/model_small");

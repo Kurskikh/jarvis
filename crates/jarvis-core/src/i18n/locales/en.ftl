@@ -88,12 +88,7 @@ settings-beta-feedback = Report all bugs to
 settings-beta-bot = our Telegram bot
 settings-open-logs = Open logs folder
 
-# settings - picovoice
 settings-attention = Attention!
-settings-picovoice-warning = This neural network doesn't work for everyone!
-settings-picovoice-waiting = We are waiting for an official patch from the developers.
-settings-picovoice-key-desc = Enter your Picovoice key here. It is issued for free upon registration at
-settings-picovoice-key = Picovoice Key
 
 # settings - vosk
 settings-auto-detect = Auto-detect

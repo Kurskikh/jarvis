@@ -100,7 +100,6 @@
     let selectedNoiseSuppression = ""
     let selectedVad = ""
     let gainNormalizerEnabled = false
-    let apiKeyPicovoice = ""
     let apiKeyOpenai = ""
 
     // {label,value} for NativeSelect. label prefers a `backend-<id>` translation
@@ -149,7 +148,6 @@
                     vad_backend: selectedVad,
                     gain_normalizer: gainNormalizerEnabled.toString(),
 
-                    api_key__picovoice: apiKeyPicovoice,
                     api_key__openai: apiKeyOpenai
                 }
             })
@@ -245,7 +243,7 @@
             // load settings from db
             const [mic, wakeWord, intentReco, slotEngine, glinerModel, voskModel,
                    noiseSuppression, vad, gainNormalizer,
-                   pico, openai] = await Promise.all([
+                   openai] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
                 invoke<string>("db_read", { key: "intent_backend" }),
@@ -257,7 +255,6 @@
                 invoke<string>("db_read", { key: "vad_backend" }),
                 invoke<string>("db_read", { key: "gain_normalizer" }),
 
-                invoke<string>("db_read", { key: "api_key__picovoice" }),
                 invoke<string>("db_read", { key: "api_key__openai" })
             ])
 
@@ -270,7 +267,6 @@
             selectedNoiseSuppression = noiseSuppression
             selectedVad = vad
             gainNormalizerEnabled = gainNormalizer === "true"
-            apiKeyPicovoice = pico
             apiKeyOpenai = openai
 
             // never hold a value that is not in its option list: NativeSelect
@@ -401,14 +397,10 @@
         <!--
             values must be the WakeWordEngine variant names: db_read returns
             format!("{:?}", ..) so this is what comes back on load, and
-            Settings::set lowercases before matching rustpotter|vosk|porcupine.
-            "Picovoice" was neither - it displayed as unselected on load and
-            made db_write reject, which now fails the whole save.
+            Settings::set lowercases before matching them.
 
-            Porcupine is deliberately absent: listener.rs has no implementation
-            for it, so picking it left the assistant with no wake word at all.
-            The variant itself stays in WakeWordEngine so an older app.db that
-            still holds it can be read; listener.rs falls back to Rustpotter.
+            Porcupine was removed entirely - it had no implementation and left
+            the assistant with no wake word at all when selected.
         -->
         <NativeSelect
             data={[

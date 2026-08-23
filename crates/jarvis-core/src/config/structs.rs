@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 pub enum WakeWordEngine {
     Rustpotter,
     Vosk,
-    Porcupine,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq)]

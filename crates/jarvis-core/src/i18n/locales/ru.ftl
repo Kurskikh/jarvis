@@ -88,12 +88,7 @@ settings-beta-feedback = Сообщайте обо всех найденных �
 settings-beta-bot = наш телеграм бот
 settings-open-logs = Открыть папку с логами
 
-# settings - picovoice
 settings-attention = Внимание!
-settings-picovoice-warning = Эта нейросеть работает не у всех!
-settings-picovoice-waiting = Мы ждем официального патча от разработчиков.
-settings-picovoice-key-desc = Введите сюда свой ключ Picovoice. Он выдается бесплатно при регистрации в
-settings-picovoice-key = Ключ Picovoice
 
 # settings - vosk
 settings-auto-detect = Авто-определение

@@ -5,11 +5,31 @@ use crate::config::structs::SpeechToTextEngine;
 use crate::config::structs::WakeWordEngine;
 use crate::config::structs::NoiseSuppressionBackend;
 
+// an app.db written before Porcupine was dropped still names it. serde would
+// fail the whole struct, and db::init_settings() falls back to Settings::default()
+// on ANY parse error - one stale value would silently wipe every other setting.
+// so this field degrades on its own instead of taking the file down with it.
+fn deserialize_wake_word_engine<'de, D>(d: D) -> Result<WakeWordEngine, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = String::deserialize(d)?;
+    Ok(match raw.as_str() {
+        "Rustpotter" => WakeWordEngine::Rustpotter,
+        "Vosk" => WakeWordEngine::Vosk,
+        other => {
+            warn!("Unknown wake word engine '{}' in settings, using the default.", other);
+            config::DEFAULT_WAKE_WORD_ENGINE
+        }
+    })
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Settings {
     pub microphone: i32,
     pub voice: String,
 
+    #[serde(deserialize_with = "deserialize_wake_word_engine")]
     pub wake_word_engine: WakeWordEngine,
 
     // backend selections (string IDs matching model or code backend IDs)
@@ -111,7 +131,6 @@ impl Settings {
             "gain_normalizer"           => Some(self.gain_normalizer.to_string()),
             "language"                  => Some(self.language.clone()),
             "ahk_interpreter"           => Some(self.ahk_interpreter.clone()),
-            "api_key__picovoice"        => Some(self.api_keys.picovoice.clone()),
             "api_key__openai"           => Some(self.api_keys.openai.clone()),
             _ => None,
         }
@@ -131,7 +150,6 @@ impl Settings {
                 self.wake_word_engine = match val.to_lowercase().as_str() {
                     "rustpotter" => WakeWordEngine::Rustpotter,
                     "vosk"       => WakeWordEngine::Vosk,
-                    "porcupine"  => WakeWordEngine::Porcupine,
                     _ => return Err(format!("unknown wake word engine: '{}'", val)),
                 };
             }
@@ -177,9 +195,6 @@ impl Settings {
                 }
                 self.ahk_interpreter = path.to_string();
             }
-            "api_key__picovoice" => {
-                self.api_keys.picovoice = val.to_string();
-            }
             "api_key__openai" => {
                 self.api_keys.openai = val.to_string();
             }
@@ -220,7 +235,6 @@ impl Settings {
             "gain_normalizer",
             "language",
             "ahk_interpreter",
-            "api_key__picovoice",
             "api_key__openai",
         ]
     }
@@ -252,7 +266,6 @@ impl Default for Settings {
             ahk_interpreter: String::new(),
 
             api_keys: ApiKeys {
-                picovoice: String::from(""),
                 openai: String::from(""),
             },
         }
@@ -261,6 +274,5 @@ impl Default for Settings {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ApiKeys {
-    pub picovoice: String,
     pub openai: String,
 }
