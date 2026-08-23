@@ -8,6 +8,16 @@ use crate::{config, APP_DIR};
 // store rustpotter instance
 static RUSTPOTTER: OnceCell<Mutex<Rustpotter>> = OnceCell::new();
 
+// Rustpotter accepts exactly get_samples_per_frame() samples per call and
+// silently returns None for anything else (detector.rs:249). The recorder is
+// fixed at 512 samples because that is what PvRecorder wants, while the
+// detector derives its own length from its internal rate and MFCC frame -
+// 16000 * 30 / 1000 = 480. The two never lined up, so every frame was dropped
+// at the door and the wake word could not fire at all. Re-chunk here rather
+// than changing the recorder, which also feeds the VAD and the recogniser.
+static PENDING: Mutex<Vec<i16>> = Mutex::new(Vec::new());
+static FRAME_SAMPLES: OnceCell<usize> = OnceCell::new();
+
 pub fn init() -> Result<(), ()> {
     let rustpotter_config = config::RUSTPOTTER_DEFAULT_CONFIG;
 
@@ -48,7 +58,8 @@ pub fn init() -> Result<(), ()> {
                 return Err(());
             }
 
-            info!("Rustpotter: {} wakeword model(s) loaded.", loaded);
+            info!("Rustpotter: {} wakeword model(s) loaded, {} samples per frame expected.",
+                  loaded, rinstance.get_samples_per_frame());
 
             // store
             let _ = RUSTPOTTER.set(Mutex::new(rinstance));
@@ -66,12 +77,27 @@ pub fn init() -> Result<(), ()> {
 pub fn data_callback(frame_buffer: &[i16]) -> Option<i32> {
     let mut lock = RUSTPOTTER.get().unwrap().lock();
     let rustpotter = lock.as_mut().unwrap();
-    // let detection = rustpotter.process_samples(frame_buffer.to_vec()); // @TODO. Temp crutch. Fix optimization issue, frame_buffer should not be copied to a new vector!
-    let detection = rustpotter.process_samples(frame_buffer);
 
-    // info!("Ruspotter data callback");
+    let wanted = *FRAME_SAMPLES.get_or_init(|| rustpotter.get_samples_per_frame());
 
-    if let Some(detection) = detection {
+    // the recorder's frame size is not the detector's, so buffer the remainder
+    // and hand over exactly what it asks for, as many times as it fits
+    let mut pending = PENDING.lock().unwrap();
+    pending.extend_from_slice(frame_buffer);
+
+    let mut hit = None;
+    while pending.len() >= wanted {
+        let chunk: Vec<i16> = pending.drain(..wanted).collect();
+
+        if let Some(detection) = rustpotter.process_samples(chunk.as_slice()) {
+            if hit.is_none() {
+                hit = Some(detection);
+            }
+        }
+    }
+    drop(pending);
+
+    if let Some(detection) = hit {
         // one readable line per candidate: which model scored, how strongly,
         // and the gate it had to clear. near-misses stay at debug, so tuning
         // the threshold is a matter of reading the log rather than guessing
