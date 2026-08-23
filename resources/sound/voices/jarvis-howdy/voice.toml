@@ -1,7 +1,7 @@
 [voice]
 id = "jarvis-howdy"
 name = "Jarvis Howdy"
-author = "Abraham (Priler)"
+author = ""
 languages = ["ru"]
 
 [reactions.ru]

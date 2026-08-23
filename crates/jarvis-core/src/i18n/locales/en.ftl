@@ -42,10 +42,6 @@ stats-not-selected = Not selected
 stats-loading = Loading...
 
 # ### FOOTER
-footer-author = Project author
-footer-telegram = Our Telegram channel
-footer-github = Github repository
-footer-support = Support the project on
 
 # ### SETTINGS
 settings-title = Settings
@@ -84,8 +80,6 @@ settings-disabled = Disabled
 # settings - beta notice
 settings-beta-title = BETA version!
 settings-beta-desc = Some features may not work correctly.
-settings-beta-feedback = Report all bugs to
-settings-beta-bot = our Telegram bot
 settings-open-logs = Open logs folder
 
 settings-attention = Attention!

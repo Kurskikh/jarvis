@@ -17,7 +17,6 @@
     } from "@/stores"
 
     import HDivider from "@/components/elements/HDivider.svelte"
-    import Footer from "@/components/Footer.svelte"
 
     import {
         Notification,
@@ -1610,7 +1609,6 @@
 </Modal>
 
 <HDivider />
-<Footer />
 
 <style lang="scss">
     .row-hit {

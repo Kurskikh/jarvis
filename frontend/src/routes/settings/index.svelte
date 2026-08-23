@@ -8,7 +8,6 @@
     import { appInfo, assistantVoice, translations, translate } from "@/stores"
 
     import HDivider from "@/components/elements/HDivider.svelte"
-    import Footer from "@/components/Footer.svelte"
 
     import {
         Notification,
@@ -117,10 +116,8 @@
         voiceVal = value
     })
 
-    let feedbackLink = ""
     let logFilePath = ""
     appInfo.subscribe(info => {
-        feedbackLink = info.feedbackLink
         logFilePath = info.logFilePath
     })
 
@@ -303,7 +300,6 @@
     withCloseButton={false}
 >
     {t('settings-beta-desc')}<br />
-    {t('settings-beta-feedback')} <a href={feedbackLink} target="_blank">{t('settings-beta-bot')}</a>.
     <Space h="sm" />
     <Button
         color="gray"
@@ -578,7 +574,6 @@
 </Button>
 
 <HDivider />
-<Footer />
 
 <style lang="scss">
 .voice-select {

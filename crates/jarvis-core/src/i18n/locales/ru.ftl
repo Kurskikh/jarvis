@@ -42,10 +42,6 @@ stats-not-selected = Не выбран
 stats-loading = Загрузка...
 
 # FOOTER
-footer-author = Автор проекта
-footer-telegram = Наш телеграм канал
-footer-github = Github репозиторий проекта
-footer-support = Поддержать проект на
 
 # SETTINGS
 settings-title = Настройки
@@ -84,8 +80,6 @@ settings-disabled = Отключено
 # settings - beta notice
 settings-beta-title = БЕТА версия!
 settings-beta-desc = Часть функций может работать некорректно.
-settings-beta-feedback = Сообщайте обо всех найденных багах в
-settings-beta-bot = наш телеграм бот
 settings-open-logs = Открыть папку с логами
 
 settings-attention = Внимание!

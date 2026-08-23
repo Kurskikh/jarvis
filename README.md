@@ -51,13 +51,9 @@ Or run dev with `cargo tauri dev`.
 <br><br>
 *Thought you might need some of the platform specific libraries for [PvRecorder](https://github.com/Picovoice/pvrecorder) and [Vosk](https://github.com/alphacep/vosk-api).*
 
-## Author
-
-Abraham Tugalov
-
 ## Python version?
 Old version of Jarvis was built with Python.<br>
-The last Python version commit can be found [here](https://github.com/Priler/jarvis/tree/943efbfbdb8aeb5889fa5e2dc7348ca4ea0b81df).
+The project was originally written in Python.
 
 ## License
 
