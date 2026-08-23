@@ -32,7 +32,7 @@
 <footer id="footer">
     <p>© {currentYear}. {t('footer-author')}: <b>{authorName}</b></p>
     <p class="links">
-        {#if $currentLanguage === "ru" || $currentLanguage === "ua"}
+        {#if tgLink && ($currentLanguage === "ru" || $currentLanguage === "ua")}
         <a href={tgLink} target="_blank" class="telegram-link">
             <img src="/media/icons/telegram.webp" alt="Telegram" width="18px" />
             &nbsp;<span>{t('footer-telegram')}</span>
@@ -44,20 +44,25 @@
             &nbsp;<span>{t('footer-github')}</span>
         </a>
     </p>
+    <!-- the support links are optional: when the constants in config.rs are None
+         the getters return an empty string and the whole paragraph is dropped,
+         rather than rendering a link that goes nowhere -->
+    {#if (boostyLink && $currentLanguage === "ru") || (patreonLink && ($currentLanguage === "ua" || $currentLanguage === "en"))}
     <p class="links last">
-        {#if $currentLanguage === "ru"}
+        {#if boostyLink && $currentLanguage === "ru"}
         {t('footer-support')} <a href={boostyLink} target="_blank" class="telegram-link">
             <img src="/media/icons/boosty.webp" alt="Boosty" width="18px" />
             <span>Boosty</span>
         </a>.
         {/if}
-        {#if $currentLanguage === "ua" || $currentLanguage === "en"}
+        {#if patreonLink && ($currentLanguage === "ua" || $currentLanguage === "en")}
         {t('footer-support')} <a href={patreonLink} target="_blank" class="telegram-link">
             <img src="/media/icons/patreon.png" alt="Patreon" width="18px" />
             <span>Patreon</span>
         </a>.
         {/if}
     </p>
+    {/if}
 </footer>
 
 <style lang="scss">

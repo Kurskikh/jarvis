@@ -404,12 +404,16 @@
             Settings::set lowercases before matching rustpotter|vosk|porcupine.
             "Picovoice" was neither - it displayed as unselected on load and
             made db_write reject, which now fails the whole save.
+
+            Porcupine is deliberately absent: listener.rs has no implementation
+            for it, so picking it left the assistant with no wake word at all.
+            The variant itself stays in WakeWordEngine so an older app.db that
+            still holds it can be read; listener.rs falls back to Rustpotter.
         -->
         <NativeSelect
             data={[
                 { label: "Rustpotter", value: "Rustpotter" },
-                { label: "Vosk", value: "Vosk" },
-                { label: "Picovoice Porcupine", value: "Porcupine" }
+                { label: "Vosk", value: "Vosk" }
             ]}
             label={t('settings-wake-word-engine')}
             description={t('settings-wake-word-desc')}
@@ -417,32 +421,6 @@
             bind:value={selectedWakeWordEngine}
         />
 
-        {#if selectedWakeWordEngine === "Porcupine"}
-            <Space h="sm" />
-            <Alert title={t('settings-attention')} color="#868E96" variant="outline">
-                <Notification
-                    title={t('settings-picovoice-warning')}
-                    icon={CrossCircled}
-                    color="orange"
-                    withCloseButton={false}
-                >
-                    {t('settings-picovoice-waiting')}
-                </Notification>
-                <Space h="sm" />
-                <Text size="sm" color="gray">
-                    {t('settings-picovoice-key-desc')}
-                    <a href="https://console.picovoice.ai/" target="_blank">Picovoice Console</a>.
-                </Text>
-                <Space h="sm" />
-                <Input
-                    icon={Code}
-                    placeholder={t('settings-picovoice-key')}
-                    variant="filled"
-                    autocomplete="off"
-                    bind:value={apiKeyPicovoice}
-                />
-            </Alert>
-        {/if}
 
         <Space h="xl" />
         {#key availableVoskModels}

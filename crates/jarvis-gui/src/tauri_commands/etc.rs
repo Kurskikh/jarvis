@@ -34,7 +34,7 @@ pub fn get_tg_official_link() -> String {
     if let Some(ver) = config::TG_OFFICIAL_LINK {
         ver.to_string()
     } else {
-        String::from("error")
+        String::new()
     }
 }
 
@@ -43,7 +43,7 @@ pub fn get_boosty_link() -> String {
     if let Some(ver) = config::SUPPORT_BOOSTY_LINK {
         ver.to_string()
     } else {
-        String::from("error")
+        String::new()
     }
 }
 
@@ -52,7 +52,7 @@ pub fn get_patreon_link() -> String {
     if let Some(ver) = config::SUPPORT_PATREON_LINK {
         ver.to_string()
     } else {
-        String::from("error")
+        String::new()
     }
 }
 
@@ -61,7 +61,7 @@ pub fn get_feedback_link() -> String {
     if let Some(res) = config::FEEDBACK_LINK {
         res.to_string()
     } else {
-        String::from("error")
+        String::new()
     }
 }
 
