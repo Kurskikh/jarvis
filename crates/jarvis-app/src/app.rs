@@ -537,6 +537,10 @@ fn spawn_llm_turn(rt: &tokio::runtime::Runtime, cfg: llm::LlmConfig, prompt: Str
     let generation = LLM_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let request_id = generation.to_string();
 
+    // spoken before the request goes out. a local model takes seconds and the
+    // assistant would otherwise answer silence with silence.
+    voices::play_thinking();
+
     let handle = rt.spawn(async move {
         ipc::send(IpcEvent::LlmThinking {
             request_id: request_id.clone(),

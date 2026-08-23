@@ -210,6 +210,18 @@ pub const DEFAULT_LLM_ALLOW_REMOTE: bool = false;
 // answer a short question. Non-reasoning models never approach it, so nobody
 // pays for the headroom.
 pub const DEFAULT_LLM_MAX_TOKENS: u32 = 2048;
+// "auto" sends nothing extra and lets the model do whatever it was built to do.
+// "off" appends the directive below to the system prompt.
+//
+// LM Studio's documented parameter list has NO reasoning switch - it is
+// model, top_p, top_k, messages, temperature, max_tokens, stream, stop,
+// presence_penalty, frequency_penalty, logit_bias, repeat_penalty, seed - so
+// there is nothing to send in the request body that would work reliably. The
+// prompt convention is what the Qwen3 chat template actually reads, and a
+// model that does not know it sees one short line of instruction, which is
+// harmless. This is a per-model-family lever, not a standard one; say so.
+pub const DEFAULT_LLM_THINKING: &str = "auto";
+pub const LLM_NO_THINK_DIRECTIVE: &str = "/no_think";
 pub const LLM_MAX_TOKENS_MIN: u32 = 64;
 pub const LLM_MAX_TOKENS_MAX: u32 = 32768;
 pub const DEFAULT_LLM_SYSTEM_PROMPT: &str =

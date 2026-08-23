@@ -113,6 +113,7 @@
     let llmModel = ""
     let llmTimeout = 60
     let llmMaxTokens = 2048
+    let llmThinking = "auto"
     let llmSystemPrompt = ""
     let llmAllowRemote = false
 
@@ -215,6 +216,7 @@
                     llm_model: llmModel.trim(),
                     llm_timeout: llmTimeoutToSave.toString(),
                     llm_max_tokens: llmMaxTokensToSave.toString(),
+                    llm_thinking: llmThinking,
                     llm_system_prompt: llmSystemPrompt,
                     llm_allow_remote: llmAllowRemote.toString()
                 }
@@ -326,7 +328,7 @@
                    noiseSuppression, vad, gainNormalizer,
                    openai,
                    llmEnabledRaw, llmBaseUrlRaw, llmModelRaw,
-                   llmTimeoutRaw, llmMaxTokensRaw, llmSystemPromptRaw, llmAllowRemoteRaw] = await Promise.all([
+                   llmTimeoutRaw, llmMaxTokensRaw, llmThinkingRaw, llmSystemPromptRaw, llmAllowRemoteRaw] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
                 invoke<string>("db_read", { key: "intent_backend" }),
@@ -345,6 +347,7 @@
                 invoke<string>("db_read", { key: "llm_model" }),
                 invoke<string>("db_read", { key: "llm_timeout" }),
                 invoke<string>("db_read", { key: "llm_max_tokens" }),
+                invoke<string>("db_read", { key: "llm_thinking" }),
                 invoke<string>("db_read", { key: "llm_system_prompt" }),
                 invoke<string>("db_read", { key: "llm_allow_remote" })
             ])
@@ -368,6 +371,7 @@
             // NumberInput renders as an empty box that then saves as "NaN"
             llmTimeout = parseInt(llmTimeoutRaw) || 60
             llmMaxTokens = parseInt(llmMaxTokensRaw) || 2048
+            llmThinking = llmThinkingRaw === "off" ? "off" : "auto"
             llmSystemPrompt = llmSystemPromptRaw
             llmAllowRemote = llmAllowRemoteRaw === "true"
 
@@ -675,6 +679,19 @@
             <Space h="xs" />
             <NumberInput min={10} max={600} step={5} variant="filled" bind:value={llmTimeout} />
         </InputWrapper>
+
+        <Space h="md" />
+
+        <NativeSelect
+            data={[
+                { label: t('settings-llm-thinking-auto'), value: "auto" },
+                { label: t('settings-llm-thinking-off'), value: "off" }
+            ]}
+            label={t('settings-llm-thinking')}
+            description={t('settings-llm-thinking-desc')}
+            variant="filled"
+            bind:value={llmThinking}
+        />
 
         <Space h="md" />
 

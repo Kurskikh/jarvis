@@ -51,6 +51,11 @@ pub struct VoiceReactions {
     #[serde(default)]
     pub not_found: Vec<String>,
 
+    // asked the language model and are waiting for it. a local model takes
+    // seconds, and without this the assistant is simply silent for all of them
+    #[serde(default)]
+    pub thinking: Vec<String>,
+
     // thank you
     #[serde(default)]
     pub thanks: Vec<String>,
@@ -70,6 +75,7 @@ pub enum Reaction {
     Reply,      // wake word detected
     Ok,         // command executed
     NotFound,
+    Thinking,   // waiting on the language model
     Thanks,
     Error,
     Goodbye,

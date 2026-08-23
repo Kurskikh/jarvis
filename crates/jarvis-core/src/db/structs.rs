@@ -80,6 +80,9 @@ pub struct Settings {
     #[serde(default = "default_llm_max_tokens")]
     pub llm_max_tokens: u32,
 
+    #[serde(default = "default_llm_thinking")]
+    pub llm_thinking: String,
+
     #[serde(default = "default_llm_system_prompt")]
     pub llm_system_prompt: String,
 
@@ -101,6 +104,7 @@ fn default_llm_enabled() -> bool { config::DEFAULT_LLM_ENABLED }
 fn default_llm_base_url() -> String { config::DEFAULT_LLM_BASE_URL.to_string() }
 fn default_llm_timeout() -> u64 { config::DEFAULT_LLM_TIMEOUT }
 fn default_llm_max_tokens() -> u32 { config::DEFAULT_LLM_MAX_TOKENS }
+fn default_llm_thinking() -> String { config::DEFAULT_LLM_THINKING.to_string() }
 fn default_llm_system_prompt() -> String { config::DEFAULT_LLM_SYSTEM_PROMPT.to_string() }
 fn default_llm_allow_remote() -> bool { config::DEFAULT_LLM_ALLOW_REMOTE }
 
@@ -228,6 +232,7 @@ impl Settings {
             "llm_model"                 => Some(self.llm_model.clone()),
             "llm_timeout"               => Some(self.llm_timeout.to_string()),
             "llm_max_tokens"            => Some(self.llm_max_tokens.to_string()),
+            "llm_thinking"              => Some(self.llm_thinking.clone()),
             "llm_system_prompt"         => Some(self.llm_system_prompt.clone()),
             "llm_allow_remote"          => Some(self.llm_allow_remote.to_string()),
             "api_key__openai"           => Some(self.api_keys.openai.clone()),
@@ -356,6 +361,12 @@ impl Settings {
                 }
                 self.llm_max_tokens = n;
             }
+            "llm_thinking" => {
+                match val {
+                    "auto" | "off" => self.llm_thinking = val.to_string(),
+                    _ => return Err(format!("thinking must be 'auto' or 'off', got: '{}'", val)),
+                }
+            }
             "llm_system_prompt" => {
                 // stored verbatim: leading whitespace and newlines are the
                 // author's business
@@ -413,6 +424,7 @@ impl Settings {
             "llm_model",
             "llm_timeout",
             "llm_max_tokens",
+            "llm_thinking",
             "llm_system_prompt",
             "llm_allow_remote",
             "api_key__openai",
@@ -497,6 +509,7 @@ impl Default for Settings {
             llm_model: String::new(),
             llm_timeout: config::DEFAULT_LLM_TIMEOUT,
             llm_max_tokens: config::DEFAULT_LLM_MAX_TOKENS,
+            llm_thinking: config::DEFAULT_LLM_THINKING.to_string(),
             llm_system_prompt: config::DEFAULT_LLM_SYSTEM_PROMPT.to_string(),
             llm_allow_remote: config::DEFAULT_LLM_ALLOW_REMOTE,
 

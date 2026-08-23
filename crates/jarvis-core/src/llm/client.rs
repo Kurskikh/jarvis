@@ -96,12 +96,13 @@ pub fn is_enabled() -> bool {
 
 impl LlmConfig {
     pub fn from_settings() -> Result<LlmConfig, LlmError> {
-        let (base_url, model, token, system_prompt, timeout_secs, max_tokens, allow_remote) = {
+        let (base_url, model, token, system_prompt, timeout_secs, max_tokens, thinking, allow_remote) = {
             let db = DB.get().ok_or_else(|| LlmError::NotConfigured(
                 "settings are not initialized in this process".to_string()))?;
             let s = db.read();
             (s.llm_base_url.clone(), s.llm_model.clone(), s.api_keys.openai.clone(),
-             s.llm_system_prompt.clone(), s.llm_timeout, s.llm_max_tokens, s.llm_allow_remote)
+             s.llm_system_prompt.clone(), s.llm_timeout, s.llm_max_tokens,
+             s.llm_thinking.clone(), s.llm_allow_remote)
         };
 
         let base_url = base_url.trim().trim_end_matches('/').to_string();
@@ -135,6 +136,22 @@ impl LlmConfig {
         // set(), and a 0 here means every turn times out instantly
         let timeout_secs = timeout_secs.clamp(config::LLM_TIMEOUT_MIN, config::LLM_TIMEOUT_MAX);
         let max_tokens = max_tokens.clamp(config::LLM_MAX_TOKENS_MIN, config::LLM_MAX_TOKENS_MAX);
+
+        // there is no request field for this - LM Studio's documented parameter
+        // list has no reasoning switch - so the lever is the chat template's own
+        // convention, read from the system prompt. Qwen3 honours it; a model
+        // that does not simply reads one short line and ignores it.
+        let system_prompt = if thinking == "off" {
+            let base = system_prompt.trim();
+            if base.is_empty() {
+                config::LLM_NO_THINK_DIRECTIVE.to_string()
+            } else {
+                format!("{}
+{}", base, config::LLM_NO_THINK_DIRECTIVE)
+            }
+        } else {
+            system_prompt
+        };
 
         Ok(LlmConfig { base_url, model, token: token.trim().to_string(),
                        system_prompt, timeout_secs, max_tokens })

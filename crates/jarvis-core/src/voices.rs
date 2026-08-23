@@ -206,6 +206,7 @@ pub fn play(reaction: structs::Reaction) {
         structs::Reaction::Reply => &reactions.reply,
         structs::Reaction::Ok => &reactions.ok,
         structs::Reaction::NotFound => &reactions.not_found,
+        structs::Reaction::Thinking => &reactions.thinking,
         structs::Reaction::Thanks => &reactions.thanks,
         structs::Reaction::Error => &reactions.error,
         structs::Reaction::Goodbye => &reactions.goodbye,
@@ -271,6 +272,9 @@ pub fn play_greet() { play(structs::Reaction::Greet); } // app startup
 pub fn play_reply() { play(structs::Reaction::Reply); } // wake word detected
 pub fn play_ok() { play(structs::Reaction::Ok); } // command executed
 pub fn play_not_found() { play(structs::Reaction::NotFound); }
+// silent until a voice pack declares `thinking` - an empty reaction list plays
+// nothing, which is the right behaviour while no clip has been recorded
+pub fn play_thinking() { play(structs::Reaction::Thinking); }
 pub fn play_thanks() { play(structs::Reaction::Thanks); }
 pub fn play_error() { play(structs::Reaction::Error); }
 pub fn play_goodbye() { play(structs::Reaction::Goodbye); }
