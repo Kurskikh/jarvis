@@ -1,7 +1,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::SystemTime;
 
-use jarvis_core::{audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, recorder, stt, intent, voices, ipc::{self, IpcEvent}, i18n, slots};
+use jarvis_core::{audio, audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, recorder, stt, intent, voices, ipc::{self, IpcEvent}, i18n, slots};
 use rand::seq::SliceRandom;
 
 use crate::should_stop;
@@ -61,6 +61,12 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
         }
 
         recorder::read_microphone(&mut frame_buffer);
+
+        // our own reaction is playing into this microphone; discard rather than
+        // transcribe it, or the confirmation becomes the next "command"
+        if audio::is_speaking() {
+            continue;
+        }
         let processed = audio_processing::process(&frame_buffer);
         
         match vad_state {
@@ -170,6 +176,12 @@ fn recognize_command(
         }
         
         recorder::read_microphone(frame_buffer);
+
+        // our own reaction is playing into this microphone; discard rather than
+        // transcribe it, or the confirmation becomes the next "command"
+        if audio::is_speaking() {
+            continue;
+        }
         let processed = audio_processing::process(frame_buffer);
         
         match vad_state {
