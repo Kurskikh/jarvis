@@ -95,7 +95,6 @@ settings-models-hint = Помістіть моделі Vosk в папку resour
 
 # settings - openai
 settings-openai-key = Ключ OpenAI
-settings-openai-not-supported = Наразі ChatGPT не підтримується. Він буде доданий у наступних оновленнях.
 
 # ### COMMANDS PAGE
 commands-search = Пошук команд...
@@ -207,6 +206,41 @@ settings-gliner-models-hint = Моделі GLiNER не знайдено.
 search-error-not-running = Асистент не запущено
 search-error-failed = Не вдалося виконати команду
 settings-no-voices = Голоси не знайдено
+
+# ### LLM
+settings-llm = Мовна модель
+settings-llm-enabled = Відповідь мовної моделі
+settings-llm-enabled-desc = Якщо команду не знайдено, запитати локальну мовну модель і показати відповідь тут.
+settings-llm-base-url = Адреса
+settings-llm-base-url-desc =
+    Сумісна з OpenAI адреса. LM Studio: http://127.0.0.1:1234/v1
+    Ollama: http://127.0.0.1:11434/v1
+settings-llm-model = Модель
+settings-llm-model-desc = Точна назва моделі, як її повідомляє сервер.
+settings-llm-timeout = Тайм-аут (секунди)
+settings-llm-timeout-desc = Перше завантаження моделі може тривати хвилину. Від 10 до 600.
+settings-llm-max-tokens = Ліміт токенів відповіді
+settings-llm-max-tokens-desc = Загальний бюджет на відповідь. Моделі з міркуванням витрачають його й на роздуми, тож за порожніх відповідей його варто підняти. Від 64 до 32768.
+settings-llm-system-prompt = Системний промпт
+settings-llm-system-prompt-desc = Надсилається перед кожним питанням. Залиште порожнім, щоб не надсилати.
+settings-llm-allow-remote = Дозволити віддалену адресу
+settings-llm-allow-remote-desc = Вимкнено — приймаються лише локальні адреси. Увімкнення надішле вашу мову на іншу машину.
+settings-llm-remote-blocked = Це не локальна адреса. Поки «Дозволити віддалену адресу» вимкнено, туди нічого не надсилається.
+settings-openai-key-desc = Токен для адреси вище. LM Studio: вкладка Developer. Ollama токен не потрібен.
+settings-saved-restart-hint = Асистент недоступний, тому він може продовжувати працювати з попередніми налаштуваннями. Перезапустіть його, щоб застосувати їх.
+
+# llm answer panel
+llm-thinking = Думаю...
+llm-answer = Відповідь
+llm-error-connect = Не вдалося зв'язатися з моделлю
+llm-error-unauthorized = Адреса відхилила токен
+llm-error-model-not-found = Модель недоступна
+llm-error-timeout = Відповідь не надійшла вчасно
+llm-error-truncated = Модель не встигла відповісти в межах ліміту
+llm-error-malformed = Неочікувана відповідь від сервера
+llm-error-http-status = Сервер повернув помилку
+llm-error-transport = Запит не вдався
+llm-error-not-configured = Мовну модель не налаштовано
 
 # BACKEND OPTION LABELS
 backend-none = Вимкнено

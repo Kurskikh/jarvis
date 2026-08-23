@@ -9,6 +9,7 @@ export {
     lastExecutedCommand,
     lastError,
     lastReload,
+    llmTurn,
     connectIpc,
     enableIpc,
     disableIpc,
@@ -18,10 +19,11 @@ export {
     sendTextCommand,
     stopJarvisApp,
     reloadCommands,
+    reloadSettings,
     awaitReload,
     waitForIpcConnected
 } from "./lib/ipc"
-export type { ReloadResult } from "./lib/ipc"
+export type { ReloadResult, LlmTurn } from "./lib/ipc"
 
 // re-export i18n
 export {

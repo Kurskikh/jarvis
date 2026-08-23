@@ -5,7 +5,7 @@
     import { setTimeout } from "worker-timers"
 
     import { showInExplorer } from "@/functions"
-    import { appInfo, assistantVoice, translations, translate } from "@/stores"
+    import { appInfo, assistantVoice, translations, translate, reloadSettings } from "@/stores"
 
     import HDivider from "@/components/elements/HDivider.svelte"
 
@@ -16,7 +16,10 @@
         Tabs,
         Space,
         Alert,
-        Input,
+        TextInput,
+        Textarea,
+        NumberInput,
+        PasswordInput,
         InputWrapper,
         NativeSelect,
         Switch
@@ -27,6 +30,7 @@
         Mix,
         Cube,
         Code,
+        ChatBubble,
         Gear,
         QuestionMarkCircled,
         CrossCircled
@@ -87,6 +91,9 @@
     let settingsSaved = false
     let saveButtonDisabled = false
     let saveError = ""
+    // extra line under the "saved" notification, when the save landed on disk
+    // but could not be handed to a running assistant
+    let saveNotice = ""
 
     // form values (state vars)
     let voiceVal = ""
@@ -100,6 +107,61 @@
     let selectedVad = ""
     let gainNormalizerEnabled = false
     let apiKeyOpenai = ""
+
+    let llmEnabled = false
+    let llmBaseUrl = ""
+    let llmModel = ""
+    let llmTimeout = 60
+    let llmMaxTokens = 2048
+    let llmSystemPrompt = ""
+    let llmAllowRemote = false
+
+    // mirrors is_loopback_url in crates/jarvis-core/src/db/structs.rs. purely an
+    // early warning next to the field - the real gate is Settings::validate_change(),
+    // which is what rejects the save, and llm::LlmConfig::from_settings(),
+    // which is what refuses to send.
+    //
+    // it has to fail closed on exactly the same characters as the Rust side:
+    // "http://evil.com\@127.0.0.1/v1" reads as host evil.com to any WHATWG
+    // parser (a backslash is a path delimiter for http/https) and as host
+    // 127.0.0.1 to a naive "text after the last @" split. tab/CR/LF are
+    // stripped before parsing and non-ASCII goes through IDNA, so those are out
+    // too - none of them belongs in a local endpoint address.
+    const URL_UNSAFE_CHAR = /[\\\s\u0000-\u001f\u007f-\uffff]/
+
+    function isLoopbackUrl(url: string): boolean {
+        const trimmed = url.trim()
+        if (URL_UNSAFE_CHAR.test(trimmed)) return false
+        const m = /^https?:\/\/(?:[^@/]*@)?(\[[^\]]+\]|[^:/?#]+)/i.exec(trimmed)
+        if (!m) return false
+        const host = m[1].replace(/^\[|\]$/g, "").toLowerCase()
+        if (host === "localhost" || host === "::1") return true
+        const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+        return !!v4 && v4.slice(1).every(o => +o <= 255) && +v4[1] === 127
+    }
+
+    // what the endpoint box saves. an empty box must NOT be sent: Settings::set
+    // rejects "" and db_write_many is all-or-nothing, so one cleared field on
+    // this tab would fail the save of every unrelated setting on every other
+    // tab. same guard as llm_timeout below.
+    const DEFAULT_LLM_BASE_URL = "http://127.0.0.1:1234/v1"
+    $: llmBaseUrlToSave = llmBaseUrl.trim() || DEFAULT_LLM_BASE_URL
+
+    // what the timeout box saves. a cleared NumberInput binds "" / undefined,
+    // which would go out as "NaN"; a value stored before the floor moved to 10
+    // would be rejected outright. Settings::set refuses both and db_write_many
+    // is all-or-nothing, so either one would fail the whole form save.
+    $: llmTimeoutToSave = Math.min(600, Math.max(10,
+        Math.round(Number.isFinite(+llmTimeout) ? +llmTimeout : 60)))
+
+    // a cleared NumberInput binds "" / undefined and would go out as "NaN";
+    // Settings::set refuses it and db_write_many is all-or-nothing, so one
+    // empty box here would fail the save of every setting on every tab
+    $: llmMaxTokensToSave = Math.min(32768, Math.max(64,
+        Math.round(Number.isFinite(+llmMaxTokens) ? +llmMaxTokens : 2048)))
+
+    $: llmRemoteBlocked =
+        llmBaseUrl.trim() !== "" && !isLoopbackUrl(llmBaseUrl) && !llmAllowRemote
 
     // {label,value} for NativeSelect. label prefers a `backend-<id>` translation
     // and falls back to the English name the registry reports (model.toml `name`
@@ -126,6 +188,7 @@
         saveButtonDisabled = true
         settingsSaved = false
         saveError = ""
+        saveNotice = ""
 
         try {
             // one call, not twelve. db_write_many validates every entry before
@@ -145,9 +208,30 @@
                     vad_backend: selectedVad,
                     gain_normalizer: gainNormalizerEnabled.toString(),
 
-                    api_key__openai: apiKeyOpenai
+                    api_key__openai: apiKeyOpenai,
+
+                    llm_enabled: llmEnabled.toString(),
+                    llm_base_url: llmBaseUrlToSave,
+                    llm_model: llmModel.trim(),
+                    llm_timeout: llmTimeoutToSave.toString(),
+                    llm_max_tokens: llmMaxTokensToSave.toString(),
+                    llm_system_prompt: llmSystemPrompt,
+                    llm_allow_remote: llmAllowRemote.toString()
                 }
             })
+
+            // the boxes may have been empty or out of range - show what was
+            // actually stored
+            llmBaseUrl = llmBaseUrlToSave
+            llmTimeout = llmTimeoutToSave
+            llmMaxTokens = llmMaxTokensToSave
+
+            // jarvis-app read app.db once, at startup, and this is a different
+            // process: without this action nothing saved here reaches the
+            // running assistant and the LLM tab appears to do nothing. it
+            // adopts the llm_* keys only; everything else was consumed at init
+            // and still needs a restart.
+            saveNotice = reloadSettings() ? "" : t('settings-saved-restart-hint')
 
             // update shared store
             assistantVoice.set(voiceVal)
@@ -240,7 +324,9 @@
             // load settings from db
             const [mic, wakeWord, intentReco, slotEngine, glinerModel, voskModel,
                    noiseSuppression, vad, gainNormalizer,
-                   openai] = await Promise.all([
+                   openai,
+                   llmEnabledRaw, llmBaseUrlRaw, llmModelRaw,
+                   llmTimeoutRaw, llmMaxTokensRaw, llmSystemPromptRaw, llmAllowRemoteRaw] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
                 invoke<string>("db_read", { key: "intent_backend" }),
@@ -252,7 +338,15 @@
                 invoke<string>("db_read", { key: "vad_backend" }),
                 invoke<string>("db_read", { key: "gain_normalizer" }),
 
-                invoke<string>("db_read", { key: "api_key__openai" })
+                invoke<string>("db_read", { key: "api_key__openai" }),
+
+                invoke<string>("db_read", { key: "llm_enabled" }),
+                invoke<string>("db_read", { key: "llm_base_url" }),
+                invoke<string>("db_read", { key: "llm_model" }),
+                invoke<string>("db_read", { key: "llm_timeout" }),
+                invoke<string>("db_read", { key: "llm_max_tokens" }),
+                invoke<string>("db_read", { key: "llm_system_prompt" }),
+                invoke<string>("db_read", { key: "llm_allow_remote" })
             ])
 
             selectedMicrophone = mic
@@ -265,6 +359,17 @@
             selectedVad = vad
             gainNormalizerEnabled = gainNormalizer === "true"
             apiKeyOpenai = openai
+
+            llmEnabled = llmEnabledRaw === "true"
+            llmBaseUrl = llmBaseUrlRaw
+            llmModel = llmModelRaw
+            // db_read returns "" for a key Settings::get does not know
+            // (tauri_commands/db.rs), and parseInt("") is NaN, which a
+            // NumberInput renders as an empty box that then saves as "NaN"
+            llmTimeout = parseInt(llmTimeoutRaw) || 60
+            llmMaxTokens = parseInt(llmMaxTokensRaw) || 2048
+            llmSystemPrompt = llmSystemPromptRaw
+            llmAllowRemote = llmAllowRemoteRaw === "true"
 
             // never hold a value that is not in its option list: NativeSelect
             // shows option[0] while the variable keeps the stale id (it renders
@@ -318,9 +423,11 @@
     <Notification
         title={t('notification-saved')}
         icon={Check}
-        color="teal"
+        color={saveNotice ? "yellow" : "teal"}
         on:close={() => { settingsSaved = false }}
-    />
+    >
+        {saveNotice}
+    </Notification>
     <Space h="xl" />
 {/if}
 
@@ -525,21 +632,90 @@
                 bind:checked={gainNormalizerEnabled}
             />
         </InputWrapper>
+    </Tabs.Tab>
+
+    <Tabs.Tab label={t('settings-llm')} icon={ChatBubble}>
+        <Space h="sm" />
+
+        <InputWrapper label={t('settings-llm-enabled')}>
+            <Text size="sm" color="gray">{t('settings-llm-enabled-desc')}</Text>
+            <Space h="xs" />
+            <Switch
+                label={llmEnabled ? t('settings-enabled') : t('settings-disabled')}
+                bind:checked={llmEnabled}
+            />
+        </InputWrapper>
+
+        <Space h="md" />
+
+        <TextInput
+            label={t('settings-llm-base-url')}
+            description={t('settings-llm-base-url-desc')}
+            variant="filled"
+            autocomplete="off"
+            placeholder="http://127.0.0.1:1234/v1"
+            error={llmRemoteBlocked ? t('settings-llm-remote-blocked') : ""}
+            bind:value={llmBaseUrl}
+        />
+
+        <Space h="md" />
+
+        <TextInput
+            label={t('settings-llm-model')}
+            description={t('settings-llm-model-desc')}
+            variant="filled"
+            autocomplete="off"
+            bind:value={llmModel}
+        />
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-llm-timeout')}>
+            <Text size="sm" color="gray">{t('settings-llm-timeout-desc')}</Text>
+            <Space h="xs" />
+            <NumberInput min={10} max={600} step={5} variant="filled" bind:value={llmTimeout} />
+        </InputWrapper>
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-llm-max-tokens')}>
+            <Text size="sm" color="gray">{t('settings-llm-max-tokens-desc')}</Text>
+            <Space h="xs" />
+            <NumberInput min={64} max={32768} step={256} variant="filled" bind:value={llmMaxTokens} />
+        </InputWrapper>
+
+        <Space h="md" />
+
+        <Textarea
+            label={t('settings-llm-system-prompt')}
+            description={t('settings-llm-system-prompt-desc')}
+            variant="filled"
+            rows={4}
+            bind:value={llmSystemPrompt}
+        />
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-llm-allow-remote')}>
+            <Text size="sm" color="gray">{t('settings-llm-allow-remote-desc')}</Text>
+            <Space h="xs" />
+            <Switch
+                label={llmAllowRemote ? t('settings-enabled') : t('settings-disabled')}
+                bind:checked={llmAllowRemote}
+            />
+        </InputWrapper>
 
         <Space h="xl" />
 
         <InputWrapper label={t('settings-openai-key')}>
-            <Text size="sm" color="gray">
-                {t('settings-openai-not-supported')}
-            </Text>
+            <Text size="sm" color="gray">{t('settings-openai-key-desc')}</Text>
             <Space h="sm" />
-            <Input
+            <PasswordInput
                 icon={Code}
                 placeholder={t('settings-openai-key')}
                 variant="filled"
                 autocomplete="off"
                 bind:value={apiKeyOpenai}
-                disabled
             />
         </InputWrapper>
     </Tabs.Tab>

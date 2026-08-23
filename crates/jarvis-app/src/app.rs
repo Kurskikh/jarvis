@@ -1,7 +1,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::SystemTime;
 
-use jarvis_core::{audio, audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, recorder, stt, intent, voices, ipc::{self, IpcEvent}, i18n, slots};
+use jarvis_core::{audio, audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, llm, recorder, stt, intent, voices, ipc::{self, IpcEvent}, i18n, slots};
 use rand::seq::SliceRandom;
 
 use crate::should_stop;
@@ -213,6 +213,7 @@ fn recognize_command(
                     ipc::send(IpcEvent::SpeechRecognized {
                         text: recognized_voice.clone(),
                     });
+                    supersede_llm_turn();
                     
                     recognized_voice = recognized_voice.to_lowercase();
                     
@@ -331,6 +332,7 @@ fn process_text_command(text: &str, rt: &tokio::runtime::Runtime) {
     info!("Processing text command: {}", text);
     
     ipc::send(IpcEvent::SpeechRecognized { text: text.to_string() });
+    supersede_llm_turn();
     
     let mut filtered = text.to_lowercase();
     // for tbr in config::ASSISTANT_PHRASES_TBR {
@@ -425,14 +427,170 @@ fn execute_command(text: &str, rt: &tokio::runtime::Runtime) -> bool {
         }
     } else {
         info!("No command found for: {}", text);
-        voices::play_not_found();
-        ipc::send(IpcEvent::Error { 
-            message: format!("Command not found: {}", text) 
-        });
+
+        // the LLM turn takes over the "I did not understand that" slot when it
+        // is on AND usable. everything else is byte-for-byte the old behaviour.
+        //
+        // is_enabled() first, and from_settings() only inside the arm: this is
+        // the audio thread, and the default (disabled) path must not take the
+        // settings read lock and clone five Strings on every no-match.
+        if !llm::is_enabled() {
+            // switched off: exactly as before this stage existed
+            voices::play_not_found();
+            ipc::send(IpcEvent::Error {
+                message: format!("Command not found: {}", text)
+            });
+        } else {
+            match llm::LlmConfig::from_settings() {
+                Ok(cfg) => {
+                    // not_found.wav normally does NOT play here. it is a canned
+                    // "no", and with no TTS in this stage that sound plus the
+                    // GUI IS the whole reply - announcing failure and then
+                    // quietly putting an answer on screen contradicts itself.
+                    //
+                    // UNLESS nobody is subscribed to the IPC broadcast: then the
+                    // answer, and any error explaining its absence, is dropped
+                    // by ipc::send and the turn produces no observable output at
+                    // all. running with the GUI closed is a supported state
+                    // (tray.rs open_settings checks the same thing), so in it
+                    // the old audible reaction is still the whole reply.
+                    if !ipc::has_clients() {
+                        debug!("No IPC client attached; the LLM answer has nowhere to land.");
+                        voices::play_not_found();
+                    }
+                    spawn_llm_turn(rt, cfg, text.to_string());
+                }
+                // switched on but unusable: no model name, or a remote endpoint
+                // with llm_allow_remote off. old behaviour, plus the reason on
+                // the wire - a half-configured LLM that is silent is unfixable.
+                Err(e) => {
+                    warn!("LLM turn skipped: {}", e);
+                    voices::play_not_found();
+                    ipc::send(IpcEvent::LlmAnswer {
+                        request_id: String::new(),
+                        prompt: text.to_string(),
+                        answer: None,
+                        model: String::new(),
+                        elapsed_ms: 0,
+                        error_code: Some(e.code().to_string()),
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
     }
     
     ipc::send(IpcEvent::Idle);
     false // no chain on error or not found
+}
+
+
+// ### LLM TURN (stage 1: text answer only - no tools, no streaming, no speech)
+
+// generation of the newest LLM turn. the request is spawned and the utterance
+// returns immediately, so two quick "no command found"s put two answers in
+// flight; without this the slower one lands last and overwrites the newer
+// question's answer in the GUI.
+static LLM_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// handle of the in-flight turn, so a new question also CANCELS the old request
+// instead of leaving the model generating tokens nobody will read.
+static LLM_TASK: once_cell::sync::Lazy<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+    once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(None));
+
+// retire whatever LLM turn is in flight, from the audio thread, on every new
+// utterance - not only on the ones that reach spawn_llm_turn.
+//
+// without this an utterance that DOES match a command leaves the previous
+// question's request running: the GUI clears its panel on speech_recognized
+// (frontend/src/lib/ipc.ts), the generation counter never moves, and the late
+// answer is then admitted onto a panel whose question is two turns old.
+//
+// no terminal event is sent for the dropped turn and none is needed: the
+// speech_recognized that precedes this call has already cleared the panel, so
+// there is no spinner left to strand.
+fn supersede_llm_turn() {
+    use std::sync::atomic::Ordering;
+
+    LLM_GEN.fetch_add(1, Ordering::SeqCst);
+    if let Some(old) = LLM_TASK.lock().take() {
+        old.abort();
+    }
+}
+
+// ask the LLM about an utterance no command matched, WITHOUT blocking here.
+//
+// this runs on the audio thread. recorder::read_microphone is a blocking pull
+// and pv_recorder's driver-side ring is 50 frames = 1.6s at 512/16000, so a
+// multi-second call here would first make the loop run behind wall clock and
+// then start losing audio outright - the wake word would be deaf for the whole
+// answer. stage 1's answer is text-only and is not part of the turn, so nothing
+// downstream needs it: spawn and return.
+//
+// rt.spawn, NOT tokio::spawn: this thread is a plain std::thread (main.rs:221)
+// with no reactor in context, and a bare tokio::spawn panics there - the mirror
+// image of the hazard documented at main.rs:145-150. the future must be
+// 'static, hence the owned cfg and the cloned prompt.
+fn spawn_llm_turn(rt: &tokio::runtime::Runtime, cfg: llm::LlmConfig, prompt: String) {
+    use std::sync::atomic::Ordering;
+
+    let generation = LLM_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let request_id = generation.to_string();
+
+    let handle = rt.spawn(async move {
+        ipc::send(IpcEvent::LlmThinking {
+            request_id: request_id.clone(),
+            prompt: prompt.clone(),
+        });
+
+        let started = std::time::Instant::now();
+        let result = llm::ask(&cfg, &prompt).await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        // a newer utterance started while this was in flight. its answer is the
+        // one the user is waiting for; drop this one rather than race it.
+        if LLM_GEN.load(Ordering::SeqCst) != generation {
+            debug!("LLM answer for generation {} superseded, dropped", generation);
+            return;
+        }
+
+        match result {
+            Ok(a) => {
+                // the text goes in the log too, {:?} so a multi-line answer
+                // stays one line. with no GUI attached (see the has_clients
+                // check at the hook) the log is the only place it lands.
+                info!("LLM answered in {} ms ({} completion tokens, model {}): {:?}",
+                      elapsed_ms, a.completion_tokens, a.model, a.text);
+                ipc::send(IpcEvent::LlmAnswer {
+                    request_id,
+                    prompt,
+                    answer: Some(a.text),
+                    model: a.model,
+                    elapsed_ms,
+                    error_code: None,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                warn!("LLM turn failed after {} ms: {}", elapsed_ms, e);
+                ipc::send(IpcEvent::LlmAnswer {
+                    request_id,
+                    prompt,
+                    answer: None,
+                    model: cfg.model.clone(),
+                    elapsed_ms,
+                    error_code: Some(e.code().to_string()),
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    });
+
+    // cancelling the previous request drops its reqwest future, which aborts
+    // the HTTP call and stops the server generating for a dead question
+    if let Some(old) = LLM_TASK.lock().replace(handle) {
+        old.abort();
+    }
 }
 
 

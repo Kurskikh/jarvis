@@ -6,6 +6,7 @@
     import ArcReactor from "@/components/elements/ArcReactor.svelte"
     import HDivider from "@/components/elements/HDivider.svelte"
     import Stats from "@/components/elements/Stats.svelte"
+    import LlmAnswer from "@/components/elements/LlmAnswer.svelte"
     
     import {
         isJarvisRunning,
@@ -86,6 +87,8 @@
             </button>
         {/if}
     </div>
+
+    <LlmAnswer />
 
     <HDivider noMargin />
     <Stats />

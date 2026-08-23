@@ -193,6 +193,20 @@ fn main() -> Result<(), String> {
                     }
                 });
             }
+            IpcAction::ReloadSettings => {
+                // same constraint as ReloadCommands above: this closure runs on
+                // a tokio worker while the IPC server holds the ACTION_HANDLER
+                // read guard, so the file read goes on a task and this returns
+                // immediately.
+                tokio::spawn(async move {
+                    match db::reload_llm_settings() {
+                        Ok(true)  => info!("LLM settings reloaded from disk."),
+                        Ok(false) => debug!("LLM settings reload: nothing changed."),
+                        Err(e)    => warn!("LLM settings reload failed: {}. \
+                                            The running assistant keeps the values it started with.", e),
+                    }
+                });
+            }
             IpcAction::SetMuted { muted } => {
                 info!("Received mute request: {}", muted);
                 // TODO: implement mute

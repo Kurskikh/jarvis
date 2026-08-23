@@ -36,7 +36,11 @@ vosk = { version = "0.3.1", optional = true }
 intent-classifier = { version = "0.1.0", optional = true }
 # rustpotter = { workspace = true, optional = true }
 
-tokio = { version = "1", features = ["sync", "rt"], optional = true }
+# "time" is declared explicitly, not inherited: tokio::time::timeout in llm and
+# tokio::select! in ipc/server.rs compile today only because intent-classifier
+# pulls tokio with features=["full"]. that is a dependency's private choice and
+# breaking it would break us silently.
+tokio = { version = "1", features = ["sync", "rt", "time"], optional = true }
 
 mlua = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
@@ -60,6 +64,12 @@ jarvis_app = [
     "lua",
     "ort", "ndarray", "tokenizers", "regex",]
 
-intent = ["intent-classifier", "tokio"]
+intent = ["intent-classifier", "fastembed", "tokio"]
 lua = ["mlua", "reqwest", "winrt-notification"]
 lua_only = ["lua", "tokio"]
+
+# local LLM client. reqwest is reachable from `lua` too, but only inside the
+# jarvis_app default feature - jarvis-cli builds with default-features = false
+# and would not otherwise have it. this manifest uses no `dep:` syntax, so the
+# optional deps still create implicit features and naming them here is enough.
+llm = ["reqwest", "tokio"]

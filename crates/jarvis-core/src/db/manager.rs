@@ -32,9 +32,15 @@ impl SettingsManager {
     // write a setting by key, auto-saves to disk
     pub fn write(&self, key: &str, val: &str) -> Result<(), String> {
         let snapshot = {
+            // staged on a copy, same as write_many: an Err from set() or from
+            // the cross-field validate() drops the guard with the live
+            // settings untouched
             let mut settings = self.inner.write();
-            settings.set(key, val)?;
-            settings.clone()
+            let mut staged = settings.clone();
+            staged.set(key, val)?;
+            staged.validate_change(&settings)?;
+            *settings = staged.clone();
+            staged
         };
 
         save_settings(&snapshot)
@@ -57,6 +63,8 @@ impl SettingsManager {
                 staged.set(key, val)
                     .map_err(|e| format!("'{}': {}", key, e))?;
             }
+            // cross-field invariants, after every pair landed - order-independent
+            staged.validate_change(&settings)?;
             *settings = staged.clone();
             staged
         };

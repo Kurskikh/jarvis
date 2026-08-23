@@ -23,12 +23,27 @@ export type ReloadResult = {
     error: string | null
 }
 
+// one LLM turn, as reported by the running assistant. `thinking` is true
+// between llm_thinking and llm_answer; the two errors are the machine-readable
+// code (for the localized headline) and the composed English detail from Rust.
+export type LlmTurn = {
+    requestId: string
+    prompt: string
+    answer: string | null
+    model: string
+    elapsedMs: number
+    errorCode: string | null
+    error: string | null
+    thinking: boolean
+}
+
 export const jarvisState = writable<JarvisState>("disconnected")
 export const ipcConnected = writable(false)
 export const lastRecognizedText = writable("")
 export const lastExecutedCommand = writable("")
 export const lastError = writable("")
 export const lastReload = writable<ReloadResult | null>(null)
+export const llmTurn = writable<LlmTurn | null>(null)
 
 // ### CONNECTION ###
 
@@ -66,6 +81,11 @@ export function connectIpc(port: number = 9712) {
 
     ws.onclose = () => {
         ipcConnected.set(false)
+        // the assistant is the only thing that can end a turn. once the socket
+        // is gone no llm_answer can arrive, so a {thinking:true} left in the
+        // store is a spinner that runs until the next utterance - or forever,
+        // if the process that would have sent one is the one that just died.
+        llmTurn.set(null)
         console.log("[IPC] disconnected")
     }
 
@@ -108,6 +128,11 @@ export function disconnectIpc() {
 
     ipcConnected.set(false)
     jarvisState.set("disconnected")
+    // ws.close() above is asynchronous and onclose is not guaranteed to run
+    // after the handler was detached, so the same clear is repeated here.
+    // disableIpc() fires from the home route the moment the assistant stops,
+    // i.e. on the ordinary Stop button, not only on a crash.
+    llmTurn.set(null)
 }
 
 // ### EVENT HANDLING ###
@@ -124,6 +149,9 @@ function handleEvent(data: any) {
         case "speech_recognized":
             lastRecognizedText.set(data.text || "")
             jarvisState.set("processing")
+            // a new utterance retires the previous answer. nothing else clears
+            // this store, and a stale answer would sit on screen forever.
+            llmTurn.set(null)
             break
 
         case "command_executed":
@@ -144,6 +172,8 @@ function handleEvent(data: any) {
 
         case "stopping":
             jarvisState.set("disconnected")
+            // announced shutdown: whatever was in flight will never answer
+            llmTurn.set(null)
             break
 
         case "pong":
@@ -167,6 +197,42 @@ function handleEvent(data: any) {
                 error: data.error ?? null
             })
             break
+
+        case "llm_thinking":
+            llmTurn.set({
+                requestId: data.request_id ?? "",
+                prompt: data.prompt ?? "",
+                answer: null,
+                model: "",
+                elapsedMs: 0,
+                errorCode: null,
+                error: null,
+                thinking: true
+            })
+            break
+
+        case "llm_answer": {
+            // a late answer from a superseded turn must not overwrite a newer
+            // one. jarvis-app already drops stale answers by generation, but
+            // the socket can reconnect mid-turn and ordering across a reconnect
+            // is not guaranteed. an empty request_id is the pre-flight
+            // NotConfigured case, which has no matching llm_thinking - let it
+            // through.
+            const current = get(llmTurn)
+            const rid = data.request_id ?? ""
+            if (current && rid && current.requestId && current.requestId !== rid) break
+            llmTurn.set({
+                requestId: rid,
+                prompt: data.prompt ?? "",
+                answer: data.answer ?? null,
+                model: data.model ?? "",
+                elapsedMs: data.elapsed_ms ?? 0,
+                errorCode: data.error_code ?? null,
+                error: data.error ?? null,
+                thinking: false
+            })
+            break
+        }
     }
 }
 
@@ -278,6 +344,16 @@ export function sendIpcMessage(message: object): Promise<void> {
 
 export function sendTextCommand(text: string): boolean {
     return sendAction("text_command", { text })
+}
+
+// tell the running assistant to re-read the LLM settings from app.db.
+//
+// jarvis-app loads app.db once at startup and this window is a different
+// process, so without this an llm_* value saved here never reaches it. returns
+// false when the socket is not open - the caller must then say a restart is
+// needed instead of pretending the save is live.
+export function reloadSettings(): boolean {
+    return sendAction("reload_settings")
 }
 
 async function revealWindow() {

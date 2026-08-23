@@ -53,6 +53,44 @@ pub enum IpcEvent {
         retrain_error: Option<String>,
         error: Option<String>,
     },
+
+    // an LLM turn started for an utterance no command matched.
+    //
+    // sent from a task spawned off the audio thread, so it arrives AFTER the
+    // Idle of the turn that started it (app.rs sends Idle unconditionally). the
+    // GUI must treat it as independent of the jarvisState machine, not as a state.
+    LlmThinking {
+        request_id: String,
+        prompt: String,
+    },
+
+    // the answer, or why there is none. one of these follows every LlmThinking
+    // with the same request_id, EXCEPT when the turn was superseded: a new
+    // utterance retires the one in flight (app.rs supersede_llm_turn) and the
+    // dropped turn says nothing. that is not a stranded spinner - the
+    // SpeechRecognized of the utterance that superseded it clears the panel
+    // first, and the frontend also clears it when the socket closes, on
+    // Stopping, and on an explicit disconnect. those four are the complete set
+    // of ways a turn can end without an answer.
+    //
+    // one terminal variant rather than two: the GUI has one panel with one
+    // lifecycle, so there is exactly one event that clears the spinner and it
+    // cannot get stuck because a case was forgotten.
+    //
+    // `error_code` is LlmError::code() - a stable discriminant the GUI turns
+    // into a localized headline (llm-error-<code>). `error` is the composed
+    // English message, the only thing that names the endpoint, the model and
+    // the server's own words; shown as detail. same split as CommandsReloaded:
+    // localized frame, raw detail.
+    LlmAnswer {
+        request_id: String,
+        prompt: String,
+        answer: Option<String>,
+        model: String,
+        elapsed_ms: u64,
+        error_code: Option<String>,
+        error: Option<String>,
+    },
 }
 
 // Actions sent from GUI to jarvis-app
@@ -71,6 +109,17 @@ pub enum IpcAction {
         request_id: Option<String>,
     },
     
+    // Re-read the LLM settings from app.db.
+    //
+    // jarvis-app loads app.db once at startup and the settings window lives in
+    // a different process, so without this nothing saved there ever reaches the
+    // running assistant. fired by the GUI after a successful db_write_many;
+    // handled by db::reload_llm_settings(), which adopts ONLY the llm_* keys
+    // and the openai token - the rest were consumed at init and still need a
+    // restart. fire-and-forget: there is no answering event, the next LLM turn
+    // simply uses the new values.
+    ReloadSettings,
+
     // Ping to check connection
     Ping,
     

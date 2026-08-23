@@ -9,6 +9,7 @@ fn print_help() {
 Commands:
   classify <text>    - Test intent classification
   execute <text>     - Simulate voice input and execute command
+  ask <text>         - Ask the LLM directly, with timing (ignores llm_enabled)
   list               - List all loaded commands
   phrases            - List all training phrases
   hash               - Show commands hash
@@ -54,6 +55,39 @@ async fn classify_text(text: &str) {
         }
         None => {
             println!("  ✗ No intent matched (below threshold)");
+        }
+    }
+}
+
+async fn ask_llm(text: &str) {
+    use jarvis_core::llm;
+
+    let cfg = match llm::LlmConfig::from_settings() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  ✗ {}", e);
+            return;
+        }
+    };
+
+    if !llm::is_enabled() {
+        println!("  (note: 'llm_enabled' is false - the assistant would not ask, this does)");
+    }
+    println!("  → {}  model: {}  timeout: {}s", cfg.base_url, cfg.model, cfg.timeout_secs);
+
+    let started = std::time::Instant::now();
+    match llm::ask(&cfg, text).await {
+        Ok(a) => {
+            let usage = match (a.prompt_tokens, a.completion_tokens) {
+                (0, 0) => String::new(),
+                (p, c) => format!("  ({} prompt + {} completion tokens)", p, c),
+            };
+            println!("  ✓ {} ms{}", a.elapsed_ms, usage);
+            println!("\n{}\n", a.text);
+        }
+        Err(e) => {
+            println!("  ✗ {} ms  [{}]", started.elapsed().as_millis(), e.code());
+            println!("  {}", e);
         }
     }
 }
@@ -123,6 +157,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     jarvis_core::set_commands_list(cmds);
 
+    // init models registry (scans available AI models).
+    // NOT optional: intent::init() -> models::registry() panics outright when
+    // the registry was never built (models.rs "Models registry not initialized"),
+    // so without this the REPL is unreachable and `ask` can never be typed.
+    if let Err(e) = jarvis_core::models::init() {
+        println!("    Warning: models registry init failed: {}", e);
+    }
+
     // init intent classifier
     println!("[*] Initializing intent classifier...");
     let cmds = jarvis_core::commands_list();
@@ -188,6 +230,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  Usage: execute <text>");
                 } else {
                     execute_text(&jarvis_core::commands_list(), arg).await;
+                }
+            }
+            "ask" | "llm" => {
+                if arg.is_empty() {
+                    println!("  Usage: ask <text>");
+                } else {
+                    ask_llm(arg).await;
                 }
             }
             "reload" => {

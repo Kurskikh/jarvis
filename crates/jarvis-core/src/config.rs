@@ -184,6 +184,39 @@ pub const NNNOISELESS_FRAME_SIZE: usize = 480;
 pub const DEFAULT_LUA_SANDBOX: &str = "standard";
 pub const DEFAULT_LUA_TIMEOUT: u64 = 10000; // ms
 
+// ### LLM (stage 1: text answer on no-command-found)
+pub const DEFAULT_LLM_ENABLED: bool = false;
+// loopback literal, NOT "localhost": on Windows localhost resolves to ::1
+// first while ollama binds 127.0.0.1 only, which would fail against a server
+// that is actually running, with an error no message could explain
+pub const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:1234/v1";
+// seconds. generous on purpose: neither LM Studio nor ollama emits any wire
+// signal for "model is loading" - the request simply blocks while the weights
+// go resident, 10-60s cold on a 16GB card. a tight default would make the
+// FIRST turn of every session fail. a dead endpoint still degrades in ~2s via
+// the connect failure, long before this.
+pub const DEFAULT_LLM_TIMEOUT: u64 = 60;
+// accepted range for llm_timeout. the floor is deliberately ABOVE the client's
+// CONNECT_TIMEOUT (6s): the total budget wraps the connect, so a budget below
+// it would report "nothing is listening" as a timeout and send the owner after
+// the wrong remedy. enforced in Settings::set and clamped again in
+// llm::LlmConfig::from_settings for a hand-edited app.db.
+pub const LLM_TIMEOUT_MIN: u64 = 10;
+pub const LLM_TIMEOUT_MAX: u64 = 600;
+pub const DEFAULT_LLM_ALLOW_REMOTE: bool = false;
+// A reasoning model writes its scratchpad into the same completion budget as the
+// answer. 512 was not enough for one: it produced 512 reasoning tokens, hit
+// finish_reason="length" and left content empty. 2048 leaves room to think AND
+// answer a short question. Non-reasoning models never approach it, so nobody
+// pays for the headroom.
+pub const DEFAULT_LLM_MAX_TOKENS: u32 = 2048;
+pub const LLM_MAX_TOKENS_MIN: u32 = 64;
+pub const LLM_MAX_TOKENS_MAX: u32 = 32768;
+pub const DEFAULT_LLM_SYSTEM_PROMPT: &str =
+    "You are Jarvis, a local voice assistant. Answer in the same language the user used. \
+     Be brief: two or three sentences at most, no lists and no markdown - the answer is \
+     read off a small screen.";
+
 // ETC
 pub const CMD_RATIO_THRESHOLD: f64 = 75f64;
 pub const CMS_WAIT_DELAY: std::time::Duration = std::time::Duration::from_secs(15);

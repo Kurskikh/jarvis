@@ -95,7 +95,6 @@ settings-models-hint = Place Vosk models in resources/vosk folder
 
 # settings - openai
 settings-openai-key = OpenAI Key
-settings-openai-not-supported = ChatGPT is not currently supported. It will be added in future updates.
 
 # ### COMMANDS PAGE
 commands-search = Search commands...
@@ -207,6 +206,41 @@ settings-gliner-models-hint = No GLiNER models found.
 search-error-not-running = Assistant is not running
 search-error-failed = Failed to execute command
 settings-no-voices = No voices found
+
+# ### LLM
+settings-llm = LLM
+settings-llm-enabled = LLM fallback
+settings-llm-enabled-desc = When no command matches, ask a local language model and show the answer here.
+settings-llm-base-url = Endpoint
+settings-llm-base-url-desc =
+    OpenAI-compatible address. LM Studio: http://127.0.0.1:1234/v1
+    Ollama: http://127.0.0.1:11434/v1
+settings-llm-model = Model
+settings-llm-model-desc = Exact model name as the server reports it.
+settings-llm-timeout = Timeout (seconds)
+settings-llm-timeout-desc = A model loading for the first time can take a minute. From 10 to 600.
+settings-llm-max-tokens = Answer token limit
+settings-llm-max-tokens-desc = The whole budget for a reply. Reasoning models spend it on thinking too, so raise it if answers come back empty. 64 to 32768.
+settings-llm-system-prompt = System prompt
+settings-llm-system-prompt-desc = Sent before every question. Leave empty to send none.
+settings-llm-allow-remote = Allow a remote endpoint
+settings-llm-allow-remote-desc = Off, only loopback addresses are accepted. Turning this on sends your speech to another machine.
+settings-llm-remote-blocked = Not a loopback address. Nothing is sent there while "Allow a remote endpoint" is off.
+settings-openai-key-desc = Bearer token for the endpoint above. LM Studio: Developer tab. Ollama needs none.
+settings-saved-restart-hint = The assistant could not be reached, so it may still be using its previous settings. Restart it to apply them.
+
+# llm answer panel
+llm-thinking = Thinking...
+llm-answer = Answer
+llm-error-connect = Cannot reach the model
+llm-error-unauthorized = The endpoint rejected the token
+llm-error-model-not-found = Model not available
+llm-error-timeout = No answer in time
+llm-error-truncated = The model ran out of tokens before answering
+llm-error-malformed = Unexpected answer from the endpoint
+llm-error-http-status = The endpoint returned an error
+llm-error-transport = Request failed
+llm-error-not-configured = LLM is not configured
 
 # BACKEND OPTION LABELS (fall back to the English name from the model registry
 # when a key is absent - see frontend translate(..., `backend-${id}`, o.name))

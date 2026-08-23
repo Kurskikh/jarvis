@@ -57,6 +57,38 @@ pub struct Settings {
     #[serde(default)]
     pub ahk_interpreter: String,
 
+    // ### LLM (stage 1: text answer on no-command-found; no tools, no streaming)
+    //
+    // every field below carries its own serde default. Settings has no
+    // container-level #[serde(default)] and db::init_settings() falls back to
+    // Settings::default() on ANY parse error, so one undefaulted field added
+    // here silently wipes an existing app.db - see the note at the top of this file.
+    #[serde(default = "default_llm_enabled")]
+    pub llm_enabled: bool,
+
+    #[serde(default = "default_llm_base_url")]
+    pub llm_base_url: String,
+
+    #[serde(default)]
+    pub llm_model: String,
+
+    // SECONDS, not milliseconds. one unit end to end; the single conversion is
+    // a Duration::from_secs in llm::ask().
+    #[serde(default = "default_llm_timeout")]
+    pub llm_timeout: u64,
+
+    #[serde(default = "default_llm_max_tokens")]
+    pub llm_max_tokens: u32,
+
+    #[serde(default = "default_llm_system_prompt")]
+    pub llm_system_prompt: String,
+
+    // the offline-first escape hatch. off = only loopback endpoints are
+    // accepted. enforced in Settings::validate_change() at save time and again
+    // in llm::LlmConfig::from_settings() at use time.
+    #[serde(default = "default_llm_allow_remote")]
+    pub llm_allow_remote: bool,
+
     pub api_keys: ApiKeys,
 }
 
@@ -64,6 +96,66 @@ fn default_intent_backend() -> String { config::DEFAULT_INTENT_BACKEND.to_string
 fn default_slots_backend() -> String { config::DEFAULT_SLOTS_BACKEND.to_string() }
 fn default_vad_backend() -> String { config::DEFAULT_VAD_BACKEND.to_string() }
 fn default_language() -> String { crate::i18n::detect_system_language().to_string() }
+
+fn default_llm_enabled() -> bool { config::DEFAULT_LLM_ENABLED }
+fn default_llm_base_url() -> String { config::DEFAULT_LLM_BASE_URL.to_string() }
+fn default_llm_timeout() -> u64 { config::DEFAULT_LLM_TIMEOUT }
+fn default_llm_max_tokens() -> u32 { config::DEFAULT_LLM_MAX_TOKENS }
+fn default_llm_system_prompt() -> String { config::DEFAULT_LLM_SYSTEM_PROMPT.to_string() }
+fn default_llm_allow_remote() -> bool { config::DEFAULT_LLM_ALLOW_REMOTE }
+
+// characters that must not appear in an endpoint url, because the WHATWG
+// parser inside `url` - the one reqwest actually resolves with - reads them
+// differently from any naive split:
+//   '\'  is a PATH delimiter for http/https, so "http://evil.com\@127.0.0.1/v1"
+//        has host evil.com there while a split on '/' '?' '#' plus "text after
+//        the last @" sees 127.0.0.1 here (url-2.5.8 parser.rs:899 in
+//        parse_userinfo and :1008 in parse_host). that is a straight bypass of
+//        the loopback gate: the gate passes and the prompt leaves the machine.
+//   tab/CR/LF are STRIPPED before parsing, so they can move the authority
+//        boundary after this function has looked at it.
+//   non-ASCII goes through IDNA and can map to a host that is not what it looks
+//        like here.
+// none of them has any business in a local endpoint address.
+pub fn url_has_unsafe_char(url: &str) -> bool {
+    url.bytes().any(|b| b == b'\\' || b == b' ' || b.is_ascii_control() || !b.is_ascii())
+}
+
+// is this url's host a loopback address? the offline-first gate.
+//
+// hand-rolled on purpose: adding the `url` crate to jarvis-core for six lines
+// would land in jarvis-gui too, which builds with default-features = false and
+// no optional deps at all. that means this parser must FAIL CLOSED wherever it
+// could disagree with the real one - see url_has_unsafe_char.
+pub fn is_loopback_url(url: &str) -> bool {
+    if url_has_unsafe_char(url) {
+        return false;
+    }
+
+    let after_scheme = match url.split_once("://") {
+        Some((_, rest)) => rest,
+        None => return false,
+    };
+    // strip path / query / fragment, then userinfo
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = match authority.rsplit_once('@') {
+        Some((_, h)) => h,
+        None => authority,
+    };
+    // [::1]:1234 -> ::1 ; 127.0.0.1:1234 -> 127.0.0.1
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        hostport.split(':').next().unwrap_or("")
+    };
+
+    if host.eq_ignore_ascii_case("localhost") || host == "::1" {
+        return true;
+    }
+    // the whole 127.0.0.0/8 block, and only when the host really parses as
+    // IPv4 - "0.0.0.0" parses and is correctly NOT loopback
+    matches!(host.parse::<std::net::Ipv4Addr>(), Ok(ip) if ip.is_loopback())
+}
 
 // validate a backend id against the model registry.
 // when the registry is not initialized in this process (jarvis-cli) we cannot
@@ -131,6 +223,13 @@ impl Settings {
             "gain_normalizer"           => Some(self.gain_normalizer.to_string()),
             "language"                  => Some(self.language.clone()),
             "ahk_interpreter"           => Some(self.ahk_interpreter.clone()),
+            "llm_enabled"               => Some(self.llm_enabled.to_string()),
+            "llm_base_url"              => Some(self.llm_base_url.clone()),
+            "llm_model"                 => Some(self.llm_model.clone()),
+            "llm_timeout"               => Some(self.llm_timeout.to_string()),
+            "llm_max_tokens"            => Some(self.llm_max_tokens.to_string()),
+            "llm_system_prompt"         => Some(self.llm_system_prompt.clone()),
+            "llm_allow_remote"          => Some(self.llm_allow_remote.to_string()),
             "api_key__openai"           => Some(self.api_keys.openai.clone()),
             _ => None,
         }
@@ -195,6 +294,80 @@ impl Settings {
                 }
                 self.ahk_interpreter = path.to_string();
             }
+            "llm_enabled" => {
+                self.llm_enabled = match val.to_lowercase().as_str() {
+                    "true"  => true,
+                    "false" => false,
+                    _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
+                };
+            }
+            "llm_base_url" => {
+                // SHAPE ONLY. the loopback gate is a cross-field rule and lives
+                // in Settings::validate() - see the note there for why it
+                // cannot be checked from inside set().
+                let url = val.trim().trim_end_matches('/');
+                if url.is_empty() {
+                    return Err("base url must not be empty".to_string());
+                }
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    return Err(format!("base url must start with http:// or https://: '{}'", val));
+                }
+                // rejected HERE, with a message, rather than silently failing
+                // the loopback test later: a backslash or a stray control
+                // character makes this url mean one thing to the gate and
+                // another to reqwest (see url_has_unsafe_char)
+                if url_has_unsafe_char(url) {
+                    return Err(format!(
+                        "base url contains a character that is not allowed in an endpoint \
+                         address (backslash, space, control or non-ASCII): '{}'", val));
+                }
+                let host = url.split_once("://")
+                    .map(|(_, r)| r.split(['/', '?', '#']).next().unwrap_or(""))
+                    .unwrap_or("");
+                if host.is_empty() {
+                    return Err(format!("base url has no host: '{}'", val));
+                }
+                self.llm_base_url = url.to_string();
+            }
+            "llm_model" => {
+                self.llm_model = val.trim().to_string();
+            }
+            "llm_timeout" => {
+                let secs = val.parse::<u64>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                // the floor is above llm::client::CONNECT_TIMEOUT on purpose.
+                // the total budget is enforced by tokio::time::timeout around
+                // the whole call, so a budget SHORTER than the connect timeout
+                // reports an unreachable endpoint as Timeout ("raise
+                // llm_timeout") instead of Connect ("start the server") - the
+                // wrong remedy for the commonest failure.
+                if !(config::LLM_TIMEOUT_MIN..=config::LLM_TIMEOUT_MAX).contains(&secs) {
+                    return Err(format!("timeout must be {}-{} seconds, got: '{}'",
+                                       config::LLM_TIMEOUT_MIN, config::LLM_TIMEOUT_MAX, val));
+                }
+                self.llm_timeout = secs;
+            }
+            "llm_max_tokens" => {
+                let n = val.parse::<u32>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                if !(config::LLM_MAX_TOKENS_MIN..=config::LLM_MAX_TOKENS_MAX).contains(&n) {
+                    return Err(format!("max tokens must be {}-{}, got: '{}'",
+                                       config::LLM_MAX_TOKENS_MIN, config::LLM_MAX_TOKENS_MAX, val));
+                }
+                self.llm_max_tokens = n;
+            }
+            "llm_system_prompt" => {
+                // stored verbatim: leading whitespace and newlines are the
+                // author's business
+                self.llm_system_prompt = val.to_string();
+            }
+            "llm_allow_remote" => {
+                self.llm_allow_remote = match val.to_lowercase().as_str() {
+                    "true"  => true,
+                    "false" => false,
+                    _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
+                };
+            }
             "api_key__openai" => {
                 self.api_keys.openai = val.to_string();
             }
@@ -235,8 +408,62 @@ impl Settings {
             "gain_normalizer",
             "language",
             "ahk_interpreter",
+            "llm_enabled",
+            "llm_base_url",
+            "llm_model",
+            "llm_timeout",
+            "llm_max_tokens",
+            "llm_system_prompt",
+            "llm_allow_remote",
             "api_key__openai",
         ]
+    }
+
+    /// would this state send speech off the machine without permission?
+    fn breaks_offline_first(&self) -> bool {
+        !self.llm_base_url.trim().is_empty()
+            && !is_loopback_url(&self.llm_base_url)
+            && !self.llm_allow_remote
+    }
+
+    /// cross-field invariants for ONE save, judged as a delta against the state
+    /// it replaces.
+    ///
+    /// this CANNOT live in set(): db_write_many hands write_many a
+    /// HashMap<String,String> (jarvis-gui/src/tauri_commands/db.rs:35), whose
+    /// iteration order is arbitrary. a single save that turns llm_allow_remote
+    /// ON and sets a remote llm_base_url would then pass or fail depending on
+    /// hash order. this runs after every pair has landed, so it is
+    /// order-independent by construction.
+    ///
+    /// and it is a DELTA, not a check on the staged state alone, because the
+    /// only thing worth refusing is a save that POINTS the assistant at a
+    /// remote endpoint without permission. the other two shapes must go
+    /// through:
+    ///   - turning 'llm_allow_remote' back OFF while a remote url is stored.
+    ///     the settings form always sends both keys, so a state check would
+    ///     refuse the save that re-arms the guard and tell the user to disarm
+    ///     it again. a safety switch that cannot be switched on is worse than
+    ///     the state it guards.
+    ///   - any unrelated single-key write (tray toggles, the language switch)
+    ///     against an app.db that is already in that state. one hand-edited
+    ///     value must not make every other setting in the app unwritable.
+    /// neither one leaks anything: llm::LlmConfig::from_settings() refuses the
+    /// endpoint again at the point of use, which is where the packet would
+    /// actually leave.
+    pub fn validate_change(&self, previous: &Settings) -> Result<(), String> {
+        if self.breaks_offline_first()
+            && !previous.breaks_offline_first()
+            && self.llm_base_url != previous.llm_base_url
+        {
+            return Err(format!(
+                "'llm_base_url': '{}' is not a loopback address. jarvis is offline-first - \
+                 set 'llm_allow_remote' to true in the same save if you really mean to send \
+                 your speech to another machine.",
+                self.llm_base_url
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -265,6 +492,14 @@ impl Default for Settings {
 
             ahk_interpreter: String::new(),
 
+            llm_enabled: config::DEFAULT_LLM_ENABLED,
+            llm_base_url: config::DEFAULT_LLM_BASE_URL.to_string(),
+            llm_model: String::new(),
+            llm_timeout: config::DEFAULT_LLM_TIMEOUT,
+            llm_max_tokens: config::DEFAULT_LLM_MAX_TOKENS,
+            llm_system_prompt: config::DEFAULT_LLM_SYSTEM_PROMPT.to_string(),
+            llm_allow_remote: config::DEFAULT_LLM_ALLOW_REMOTE,
+
             api_keys: ApiKeys {
                 openai: String::from(""),
             },
@@ -275,4 +510,96 @@ impl Default for Settings {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ApiKeys {
     pub openai: String,
+}
+
+// ### TESTS
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_the_loopback_forms_the_endpoint_can_take() {
+        assert!(is_loopback_url("http://127.0.0.1:1234/v1"));
+        assert!(is_loopback_url("http://127.0.0.1:11434/v1"));
+        assert!(is_loopback_url("http://127.5.5.5/v1"));   // the whole /8
+        assert!(is_loopback_url("http://localhost:1234/v1"));
+        assert!(is_loopback_url("HTTP://LocalHost:1234/v1"));
+        assert!(is_loopback_url("http://[::1]:1234/v1"));
+        assert!(is_loopback_url("http://user:pw@127.0.0.1:1234/v1"));
+    }
+
+    #[test]
+    fn rejects_hosts_that_are_not_loopback() {
+        assert!(!is_loopback_url("http://0.0.0.0:1234/v1"));
+        assert!(!is_loopback_url("http://192.168.1.10:1234/v1"));
+        assert!(!is_loopback_url("https://api.openai.com/v1"));
+        assert!(!is_loopback_url("http://127.0.0.1.evil.com/v1"));
+        assert!(!is_loopback_url("127.0.0.1:1234"));       // no scheme
+        assert!(!is_loopback_url(""));
+    }
+
+    // the one that matters: a backslash makes the WHATWG parser reqwest uses
+    // stop the authority at evil.com, while "text after the last @" sees
+    // 127.0.0.1. if this ever passes again the gate is decoration.
+    #[test]
+    fn rejects_urls_that_would_parse_differently_in_reqwest() {
+        assert!(!is_loopback_url(r"http://evil.com\@127.0.0.1/v1"));
+        assert!(!is_loopback_url("http://evil.com\t@127.0.0.1/v1"));
+        assert!(!is_loopback_url("http://evil.com\n@127.0.0.1/v1"));
+        assert!(!is_loopback_url("http://evil.com\r@127.0.0.1/v1"));
+        assert!(!is_loopback_url("http://evil.com @127.0.0.1/v1"));
+        assert!(!is_loopback_url("http://①27.0.0.1/v1"));
+    }
+
+    #[test]
+    fn set_rejects_a_url_it_cannot_reason_about() {
+        let mut s = Settings::default();
+        assert!(s.set("llm_base_url", r"http://evil.com\@127.0.0.1/v1").is_err());
+        assert!(s.set("llm_base_url", "ws://127.0.0.1:1234/v1").is_err());
+        assert!(s.set("llm_base_url", "").is_err());
+        assert!(s.set("llm_base_url", "http://127.0.0.1:1234/v1/").is_ok());
+        assert_eq!(s.llm_base_url, "http://127.0.0.1:1234/v1");
+    }
+
+    #[test]
+    fn set_enforces_the_timeout_range() {
+        let mut s = Settings::default();
+        assert!(s.set("llm_timeout", "9").is_err());   // below CONNECT_TIMEOUT
+        assert!(s.set("llm_timeout", "601").is_err());
+        assert!(s.set("llm_timeout", "10").is_ok());
+        assert_eq!(s.llm_timeout, 10);
+    }
+
+    #[test]
+    fn refuses_a_save_that_points_at_a_remote_endpoint() {
+        let previous = Settings::default();
+        let mut staged = previous.clone();
+        staged.set("llm_base_url", "https://api.openai.com/v1").unwrap();
+
+        assert!(staged.validate_change(&previous).is_err());
+
+        // ... unless the same save grants permission
+        staged.set("llm_allow_remote", "true").unwrap();
+        assert!(staged.validate_change(&previous).is_ok());
+    }
+
+    #[test]
+    fn never_refuses_a_save_that_re_arms_the_guard() {
+        // a remote endpoint the user already allowed
+        let mut previous = Settings::default();
+        previous.set("llm_allow_remote", "true").unwrap();
+        previous.set("llm_base_url", "https://api.openai.com/v1").unwrap();
+
+        // turning the guard back on, url untouched: the settings form always
+        // sends both keys, so this must not be refused
+        let mut staged = previous.clone();
+        staged.set("llm_allow_remote", "false").unwrap();
+        assert!(staged.validate_change(&previous).is_ok());
+
+        // and an unrelated single-key write against that state must go through
+        let mut unrelated = staged.clone();
+        unrelated.set("gain_normalizer", "true").unwrap();
+        assert!(unrelated.validate_change(&staged).is_ok());
+    }
 }
