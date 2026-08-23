@@ -140,7 +140,10 @@ fn handle_menu_event(event: &MenuEvent, settings: &SettingsManager, tray_state: 
 
     // -- action items
     match id {
-        "exit" => std::process::exit(0),
+        "exit" => {
+            release_audio();
+            std::process::exit(0)
+        }
         "restart" => {
             info!("Restarting from tray menu...");
             restart_app();
@@ -164,6 +167,15 @@ fn load_icon_from_bytes(bytes: &[u8]) -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(rgba, width, height).expect("Failed to create icon")
 }
 
+// std::process::exit does not unwind, so nothing in the audio loop's shutdown
+// path (app.rs, where stop_recording lives) ever runs when the tray exits.
+// Every exit route has to release the microphone itself.
+fn release_audio() {
+    if let Err(()) = jarvis_core::recorder::stop_recording() {
+        error!("Failed to stop the recorder before exiting.");
+    }
+}
+
 fn restart_app() {
     let exe_path = match std::env::current_exe() {
         Ok(path) => path,
@@ -172,7 +184,12 @@ fn restart_app() {
             return;
         }
     };
-    
+
+    // release the microphone BEFORE the replacement starts. spawning first left
+    // the new instance opening a device the old one still held, and PvRecorder
+    // blocks rather than failing - the restart looked like a hang.
+    release_audio();
+
     match Command::new(&exe_path).spawn() {
         Ok(_) => {
             info!("Spawned new instance, exiting current...");
