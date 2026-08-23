@@ -97,7 +97,10 @@ pub const RUSTPOTTER_DEFAULT_CONFIG: Lazy<RustpotterConfig> = Lazy::new(|| {
         detector: DetectorConfig {
             avg_threshold: 0.,
             threshold: 0.5,
-            min_scores: 15,
+            // rustpotter's own default is 5. at 30 ms per frame, 15 demanded
+            // 450 ms of uninterrupted above-threshold score for a word that
+            // takes about that long to say - measured recall was ~54 %.
+            min_scores: 5,
             score_ref: 0.22,
             band_size: 5,
             vad_mode: None,
@@ -117,8 +120,14 @@ pub const RUSTPOTTER_DEFAULT_CONFIG: Lazy<RustpotterConfig> = Lazy::new(|| {
                 min_gain: 0.7,
                 max_gain: 1.0,
             },
+            // rustpotter's own default is disabled. 80-400 Hz keeps the
+            // fundamental and discards everything above it, while consonants
+            // and most formants - the detail MFCC actually discriminates on -
+            // sit between 300 and 3400 Hz. The community models were almost
+            // certainly built with the CLI defaults, so filtering at inference
+            // that was absent at training is a mismatch on top of the loss.
             band_pass: BandPassConfig {
-                enabled: true,
+                enabled: false,
                 low_cutoff: 80.,
                 high_cutoff: 400.,
             },
