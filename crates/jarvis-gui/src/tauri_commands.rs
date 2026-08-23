@@ -8,7 +8,6 @@ pub use db::*;
 
 // import LISTENER commands
 // @REMOVED: gui not listens anymore
-// mod listener;
 // pub use listener::*;
 
 // import ETC commands
