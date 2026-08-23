@@ -51,5 +51,11 @@ tree.txt
 # Ignore packaged crates
 *.crate
 
-# Ignore AI models
+# Ignore AI models, but keep their model.toml descriptors.
+# The middle two lines are required: the first line excludes the model
+# directories themselves, and git cannot re-include a file whose parent
+# directory is excluded, so the directories have to be re-included first.
 /resources/models/*
+!/resources/models/*/
+/resources/models/*/*
+!/resources/models/*/model.toml
