@@ -9,7 +9,7 @@
     }[$jarvisState] || 'disconnected'
 </script>
 
-<div id="arc-reactor" class="reactor-container {stateClass} arc-white">
+<div id="arc-reactor" class="reactor-container {stateClass} arc-cyan">
     <div class="reactor-container-inner circle abs-center">
         <ul class="marks">
             {#each Array(60) as _, i}

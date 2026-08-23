@@ -2,10 +2,16 @@
     import { goto } from "@roxi/routify"
     import { invoke } from "@tauri-apps/api/core"
     import { onMount } from "svelte"
-    import { currentLanguage, setLanguage, translations, translate } from "@/stores"
+    import {
+        currentLanguage,
+        setLanguage,
+        translations,
+        translate,
+        commandsCount,
+        refreshCommandsCount
+    } from "@/stores"
     
     let appVersion = ""
-    let commandsCount = 0
 
     let selectedLang = "?"
     let langDropdownOpen = false
@@ -19,15 +25,18 @@
     onMount(async () => {
         try {
             appVersion = await invoke<string>("get_app_version")
-            commandsCount = await invoke<number>("get_commands_count")
+
+            // shared store, so the command editor can refresh the badge
+            // without this component remounting
+            refreshCommandsCount()
 
             // load saved language
             const savedLang = await invoke<string>("db_read", { key: "language" })
             if (savedLang) {
                 selectedLang = savedLang
             }
-        } catch {
-            commandsCount = 0
+        } catch (err) {
+            console.error("failed to load header data:", err)
         }
     })
 
@@ -69,7 +78,7 @@
     <div class="header-right">
         <button class="header-btn" on:click={() => $goto('/commands')}>
             <span class="btn-text">{t('header-commands')}</span>
-            <span class="btn-badge purple">{commandsCount}+</span>
+            <span class="btn-badge purple">{$commandsCount}+</span>
         </button>
         
         <button class="header-btn" on:click={() => $goto('/settings')}>

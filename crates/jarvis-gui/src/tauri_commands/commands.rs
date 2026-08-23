@@ -1,13 +1,12 @@
-use jarvis_core::commands::{self, JCommand, JCommandsList};
-use once_cell::sync::Lazy;
+use jarvis_core::commands::JCommand;
 
-static COMMANDS: Lazy<Vec<JCommandsList>> = Lazy::new(|| {
-    commands::parse_commands().unwrap_or_default()
-});
+// both of these read the process-shared snapshot, never a Lazy of their own:
+// every editor write republishes it through reload::reload_list(), so the count
+// in the header cannot drift away from what is actually on disk.
 
 #[tauri::command]
 pub fn get_commands_count() -> usize {
-    COMMANDS
+    jarvis_core::commands_list()
         .iter()
         .map(|list| list.commands.len())
         .sum()
@@ -15,7 +14,7 @@ pub fn get_commands_count() -> usize {
 
 #[tauri::command]
 pub fn get_commands_list() -> Vec<JCommand> {
-    COMMANDS
+    jarvis_core::commands_list()
         .iter()
         .flat_map(|list| list.commands.clone())
         .collect()

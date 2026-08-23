@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::time::Duration;
@@ -9,13 +10,32 @@ use seqdiff::ratio;
 mod structs;
 pub use structs::*;
 
+#[cfg(windows)]
+mod ahk;
+
 use crate::{config, i18n, APP_DIR};
 
 #[cfg(feature = "lua")]
 use crate::lua::{self, SandboxLevel, CommandContext};
 
-pub fn parse_commands() -> Result<Vec<JCommandsList>, String> {
-    let mut commands: Vec<JCommandsList> = Vec::new();
+// what a directory scan actually found. `skipped` names every pack that holds
+// a command.toml the parser could not read - those are DROPPED from `packs`,
+// and a caller that reports the scan as a clean success without mentioning them
+// tells the user their commands are live when they are gone.
+#[derive(Debug, Default)]
+pub struct ParsedCommands {
+    pub packs: Vec<JCommandsList>,
+    pub skipped: Vec<String>,
+}
+
+// scan resources/commands.
+//
+// Err ONLY when the directory itself cannot be read - that is the case where we
+// know nothing and the caller must keep whatever it already had. A readable but
+// empty directory is Ok(empty): after the last pack is deleted the assistant
+// must stop serving the commands that are no longer on disk.
+pub fn parse_commands_detailed() -> Result<ParsedCommands, String> {
+    let mut found = ParsedCommands::default();
 
     let commands_path = APP_DIR.join(config::COMMANDS_PATH);
     let cmd_dirs = fs::read_dir(&commands_path)
@@ -24,15 +44,21 @@ pub fn parse_commands() -> Result<Vec<JCommandsList>, String> {
     for entry in cmd_dirs.flatten() {
         let cmd_path = entry.path();
         let toml_file = cmd_path.join("command.toml");
-        
+
         if !toml_file.exists() {
             continue;
         }
-        
+
+        let pack_name = cmd_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+
         let content = match fs::read_to_string(&toml_file) {
             Ok(c) => c,
             Err(e) => {
                 warn!("Failed to read {}: {}", toml_file.display(), e);
+                found.skipped.push(pack_name);
                 continue;
             }
         };
@@ -41,47 +67,70 @@ pub fn parse_commands() -> Result<Vec<JCommandsList>, String> {
             Ok(f) => f,
             Err(e) => {
                 warn!("Failed to parse {}: {}", toml_file.display(), e);
+                found.skipped.push(pack_name);
                 continue;
             }
         };
 
-        commands.push(JCommandsList {
+        found.packs.push(JCommandsList {
             path: cmd_path,
             commands: file.commands,
         });
     }
 
-    if commands.is_empty() {
+    found.skipped.sort();
+
+    Ok(found)
+}
+
+pub fn parse_commands() -> Result<Vec<JCommandsList>, String> {
+    let found = parse_commands_detailed()?;
+
+    if found.packs.is_empty() {
         Err("No commands found".into())
     } else {
-        info!("Loaded {} command pack(s)", commands.len());
-        Ok(commands)
+        info!("Loaded {} command pack(s)", found.packs.len());
+        Ok(found.packs)
     }
 }
 
 
+// change detector for the intent backends: two lists with the same hash train
+// the same classifier.
+//
+// every variable-length part is LENGTH-PREFIXED. concatenating raw bytes made
+// ["hello", "world"] and ["helloworld"] hash identically, so moving a word
+// across a phrase boundary was invisible - and phrases_changed is the only gate
+// between a phrase edit and a classifier that keeps matching the old phrases.
 pub fn commands_hash(commands: &[JCommandsList]) -> String {
     use sha2::{Sha256, Digest};
-    
+
     let mut hasher = Sha256::new();
-    
+
+    fn feed(hasher: &mut Sha256, value: &str) {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+
     let lang = i18n::get_language();
-    hasher.update(lang.as_bytes());
-    hasher.update(b"|");
+    feed(&mut hasher, &lang);
 
     // collect all command ids and phrases for current language, sorted
     let mut all_data: Vec<(&str, _)> = commands.iter()
         .flat_map(|ac| ac.commands.iter().map(|c| (c.id.as_str(), c.get_phrases(&lang))))
         .collect();
     all_data.sort_by_key(|(id, _)| *id);
-    
+
+    hasher.update((all_data.len() as u64).to_le_bytes());
+
     for (id, phrases) in all_data {
-        hasher.update(id.as_bytes());
+        feed(&mut hasher, id);
+        hasher.update((phrases.len() as u64).to_le_bytes());
         for phrase in phrases.iter() {
-            hasher.update(phrase.as_bytes());
+            feed(&mut hasher, phrase);
         }
     }
-    
+
     format!("{:x}", hasher.finalize())
 }
 
@@ -178,8 +227,19 @@ fn word_overlap_score(input_words: &[&str], cmd_words: &[&str]) -> f64 {
 
 
 
-pub fn execute_exe(exe: &str, args: &[String]) -> std::io::Result<Child> {
+pub fn execute_exe<S: AsRef<OsStr>>(exe: S, args: &[String]) -> std::io::Result<Child> {
     Command::new(exe).args(args).spawn()
+}
+
+// run an .ahk source file through the AutoHotkey interpreter installed on this machine
+#[cfg(windows)]
+fn execute_ahk_script(script: &Path, cmd_config: &JCommand) -> Result<bool, String> {
+    ahk::execute_script(script, &cmd_config.exe_args)
+}
+
+#[cfg(not(windows))]
+fn execute_ahk_script(_script: &Path, cmd_config: &JCommand) -> Result<bool, String> {
+    Err(format!("AHK source scripts require Windows (command '{}')", cmd_config.id))
 }
 
 pub fn execute_cli(cmd: &str, args: &[String]) -> std::io::Result<Child> {
@@ -205,21 +265,29 @@ pub fn execute_command(cmd_path: &PathBuf, cmd_config: &JCommand, phrase: Option
             execute_lua_command(cmd_path, cmd_config, phrase, slots)
         }
 
-        // AutoHotkey command
-        // @TODO: Consider adding ahk source files execution?
+        // AutoHotkey command - either a compiled .exe or an .ahk source file
         "ahk" => {
-            let exe_path_absolute = Path::new(&cmd_config.exe_path);
-            let exe_path_local = cmd_path.join(&cmd_config.exe_path);
+            let declared = Path::new(&cmd_config.exe_path);
 
-            let exe_path = if exe_path_absolute.exists() {
-                exe_path_absolute
+            // a bare relative path resolves against the process working directory,
+            // not the command pack, so only trust it when it is absolute
+            let path = if declared.is_absolute() && declared.exists() {
+                declared.to_path_buf()
             } else {
-                exe_path_local.as_path()
+                cmd_path.join(&cmd_config.exe_path)
             };
 
-            execute_exe(exe_path.to_str().unwrap(), &cmd_config.exe_args)
-                .map(|_| true)
-                .map_err(|e| format!("AHK process spawn error: {}", e))
+            let is_source = path.extension()
+                .map(|e| e.eq_ignore_ascii_case("ahk"))
+                .unwrap_or(false);
+
+            if is_source {
+                execute_ahk_script(&path, cmd_config)
+            } else {
+                execute_exe(&path, &cmd_config.exe_args)
+                    .map(|_| true)
+                    .map_err(|e| format!("AHK process spawn error: {}", e))
+            }
         }
         
         // CLI command type

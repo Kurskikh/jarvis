@@ -32,6 +32,11 @@ pub struct Settings {
     #[serde(default = "default_language")]
     pub language: String,
 
+    // absolute path to an AutoHotkey interpreter (AutoHotkey.exe / AutoHotkeyUX.exe)
+    // or to an AutoHotkey install directory. empty = discover via the registry.
+    #[serde(default)]
+    pub ahk_interpreter: String,
+
     pub api_keys: ApiKeys,
 }
 
@@ -39,6 +44,53 @@ fn default_intent_backend() -> String { config::DEFAULT_INTENT_BACKEND.to_string
 fn default_slots_backend() -> String { config::DEFAULT_SLOTS_BACKEND.to_string() }
 fn default_vad_backend() -> String { config::DEFAULT_VAD_BACKEND.to_string() }
 fn default_language() -> String { crate::i18n::detect_system_language().to_string() }
+
+// validate a backend id against the model registry.
+// when the registry is not initialized in this process (jarvis-cli) we cannot
+// judge, so the value is accepted as-is; Settings::sanitize_backends() then
+// clamps it in whichever process does have a registry.
+fn validated_backend(
+    task: crate::models::Task,
+    key: &str,
+    val: &str,
+) -> Result<String, String> {
+    match crate::models::check_backend(task, val) {
+        Some(false) => {
+            let valid: Vec<String> = crate::models::get_options(task)
+                .into_iter()
+                .map(|o| o.id)
+                .collect();
+            Err(format!(
+                "invalid value for '{}': '{}' (valid: {})",
+                key,
+                val,
+                valid.join(", ")
+            ))
+        }
+        _ => Ok(val.to_string()),
+    }
+}
+
+// reset one backend field to the task's default if the registry says its
+// current value is unknown. plain fn, not a closure, to avoid closure-lifetime
+// unification across the three call sites.
+//
+// only Some(false) resets. check_backend() returns None when this process
+// cannot judge - no registry (jarvis-cli) or no models directory at all - and
+// the reset is persisted, so a guess here permanently overwrites a choice the
+// user made in a build that COULD see the models.
+fn fix_backend(
+    key: &'static str,
+    task: crate::models::Task,
+    field: &mut String,
+    fixed: &mut Vec<(&'static str, String, String)>,
+) {
+    if crate::models::check_backend(task, field.as_str()) == Some(false) {
+        let default = crate::models::default_backend(task);
+        fixed.push((key, field.clone(), default.to_string()));
+        *field = default.to_string();
+    }
+}
 
 // ### KEY-VALUE ACCESS
 
@@ -58,6 +110,7 @@ impl Settings {
             "noise_suppression"         => Some(format!("{:?}", self.noise_suppression)),
             "gain_normalizer"           => Some(self.gain_normalizer.to_string()),
             "language"                  => Some(self.language.clone()),
+            "ahk_interpreter"           => Some(self.ahk_interpreter.clone()),
             "api_key__picovoice"        => Some(self.api_keys.picovoice.clone()),
             "api_key__openai"           => Some(self.api_keys.openai.clone()),
             _ => None,
@@ -83,13 +136,16 @@ impl Settings {
                 };
             }
             "intent_backend" => {
-                self.intent_backend = val.to_string();
+                self.intent_backend =
+                    validated_backend(crate::models::Task::Intent, key, val)?;
             }
             "slots_backend" => {
-                self.slots_backend = val.to_string();
+                self.slots_backend =
+                    validated_backend(crate::models::Task::Slots, key, val)?;
             }
             "vad_backend" => {
-                self.vad_backend = val.to_string();
+                self.vad_backend =
+                    validated_backend(crate::models::Task::Vad, key, val)?;
             }
             "selected_gliner_model" => {
                 self.gliner_model = val.to_string();
@@ -114,6 +170,13 @@ impl Settings {
             "language" => {
                 self.language = val.to_string();
             }
+            "ahk_interpreter" => {
+                let path = val.trim();
+                if !path.is_empty() && !std::path::Path::new(path).exists() {
+                    return Err(format!("path does not exist: '{}'", path));
+                }
+                self.ahk_interpreter = path.to_string();
+            }
             "api_key__picovoice" => {
                 self.api_keys.picovoice = val.to_string();
             }
@@ -123,6 +186,22 @@ impl Settings {
             _ => return Err(format!("unknown setting: '{}'", key)),
         }
         Ok(())
+    }
+
+    /// clamp backend selections to ids the model registry actually knows.
+    /// no-op when this process cannot judge: registry not initialized, or no
+    /// models directory next to the executable (see models::check_backend).
+    /// returns (key, old_value, new_value) for every field that was reset.
+    pub fn sanitize_backends(&mut self) -> Vec<(&'static str, String, String)> {
+        use crate::models::Task;
+
+        let mut fixed: Vec<(&'static str, String, String)> = Vec::new();
+
+        fix_backend("intent_backend", Task::Intent, &mut self.intent_backend, &mut fixed);
+        fix_backend("slots_backend", Task::Slots, &mut self.slots_backend, &mut fixed);
+        fix_backend("vad_backend", Task::Vad, &mut self.vad_backend, &mut fixed);
+
+        fixed
     }
 
     /// all valid setting keys (for enumeration, debugging, etc.)
@@ -140,6 +219,7 @@ impl Settings {
             "noise_suppression",
             "gain_normalizer",
             "language",
+            "ahk_interpreter",
             "api_key__picovoice",
             "api_key__openai",
         ]
@@ -168,6 +248,8 @@ impl Default for Settings {
             gain_normalizer: config::DEFAULT_GAIN_NORMALIZER,
 
             language: crate::i18n::detect_system_language().to_string(),
+
+            ahk_interpreter: String::new(),
 
             api_keys: ApiKeys {
                 picovoice: String::from(""),

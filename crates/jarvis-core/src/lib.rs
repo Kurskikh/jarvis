@@ -20,6 +20,8 @@ pub mod listener;
 
 pub mod recorder;
 
+pub mod reload;
+
 #[cfg(feature = "jarvis_app")]
 pub mod stt;
 
@@ -61,7 +63,25 @@ pub static APP_DIRS: OnceCell<AppDirs> = OnceCell::new();
 pub static APP_CONFIG_DIR: OnceCell<PathBuf> = OnceCell::new();
 pub static APP_LOG_DIR: OnceCell<PathBuf> = OnceCell::new();
 pub static DB: OnceCell<Arc<RwLock<db::structs::Settings>>> = OnceCell::new();
-pub static COMMANDS_LIST: OnceCell<Vec<JCommandsList>> = OnceCell::new();
+// the audio thread borrows &JCommand out of this list and holds that borrow
+// for the whole command execution - up to cmd_config.timeout ms of Lua, or the
+// 2s sleep of the "terminate" type. a read guard held that long would make a
+// reload writer wait, and parking_lot's writer preference would then block the
+// audio thread's NEXT read. so readers take an Arc snapshot instead: the guard
+// lives just long enough to bump a refcount, and the old Vec stays alive until
+// the last snapshot drops it.
+static COMMANDS_LIST: Lazy<RwLock<Arc<Vec<JCommandsList>>>> =
+    Lazy::new(|| RwLock::new(Arc::new(Vec::new())));
+
+// snapshot of the live command list
+pub fn commands_list() -> Arc<Vec<JCommandsList>> {
+    COMMANDS_LIST.read().clone()
+}
+
+// publish a new command list. never waits on a reader.
+pub fn set_commands_list(commands: Vec<JCommandsList>) {
+    *COMMANDS_LIST.write() = Arc::new(commands);
+}
 
 // re-exports
 pub use commands::JCommandsList;

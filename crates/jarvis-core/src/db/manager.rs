@@ -43,20 +43,50 @@ impl SettingsManager {
         Ok(())
     }
 
-    // write multiple settings at once, single save
+    // write multiple settings at once, single save.
+    // all-or-nothing: every pair is applied to a staged copy first, so a
+    // rejected key leaves both the live settings and the file untouched and a
+    // form save cannot half-apply.
     pub fn write_many(&self, pairs: &[(&str, &str)]) -> Result<(), String> {
         let snapshot = {
+            // stage on a copy while holding the write lock: an Err drops the
+            // guard with the live settings untouched
             let mut settings = self.inner.write();
+            let mut staged = settings.clone();
             for (key, val) in pairs {
-                settings.set(key, val)?;
+                staged.set(key, val)
+                    .map_err(|e| format!("'{}': {}", key, e))?;
             }
-            settings.clone()
+            *settings = staged.clone();
+            staged
         };
 
         save_settings(&snapshot)
             .map_err(|e| format!("failed to save settings: {}", e))?;
 
         Ok(())
+    }
+
+    // clamp backend selections against the model registry and persist any
+    // correction. call AFTER models::init(); no-op when the registry is absent
+    pub fn sanitize_backends(&self) {
+        let (fixed, snapshot) = {
+            let mut settings = self.inner.write();
+            let fixed = settings.sanitize_backends();
+            (fixed, settings.clone())
+        };
+
+        if fixed.is_empty() {
+            return;
+        }
+
+        for (key, old, new) in &fixed {
+            warn!("Setting '{}' had unknown value '{}', reset to '{}'", key, old, new);
+        }
+
+        if let Err(e) = save_settings(&snapshot) {
+            warn!("Failed to persist sanitized settings: {}", e);
+        }
     }
 
     // direct read access to the full Settings struct (for init code that

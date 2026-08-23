@@ -68,8 +68,26 @@
     let availableMicrophones: MicrophoneOption[] = []
     let availableVoskModels: { label: string; value: string }[] = []
     let availableGlinerModels: { label: string; value: string }[] = []
+
+    // shape returned by the list_backend_options command
+    // (jarvis-core models/structs.rs BackendOption; note the snake_case fields)
+    interface BackendOption {
+        id: string
+        name: string
+        model_id: string | null
+        is_default: boolean
+    }
+
+    let intentBackends: BackendOption[] = []
+    let slotsBackends: BackendOption[] = []
+    let vadBackends: BackendOption[] = []
+    // the lists above are empty until the registry answers. without this flag
+    // the "no slot backends" alert renders on every page open, before we know
+    let backendsLoaded = false
+
     let settingsSaved = false
     let saveButtonDisabled = false
+    let saveError = ""
 
     // form values (state vars)
     let voiceVal = ""
@@ -84,6 +102,16 @@
     let gainNormalizerEnabled = false
     let apiKeyPicovoice = ""
     let apiKeyOpenai = ""
+
+    // {label,value} for NativeSelect. label prefers a `backend-<id>` translation
+    // and falls back to the English name the registry reports (model.toml `name`
+    // or catalog::code_backends). reactive on both the options and the language
+    const toSelectData = (opts: BackendOption[], trans: Record<string, string>) =>
+        opts.map(o => ({ label: translate(trans, `backend-${o.id}`, o.name), value: o.id }))
+
+    $: intentSelectData = toSelectData(intentBackends, $translations)
+    $: slotsSelectData = toSelectData(slotsBackends, $translations)
+    $: vadSelectData = toSelectData(vadBackends, $translations)
 
     // subscribe to stores
     assistantVoice.subscribe(value => {
@@ -101,24 +129,30 @@
     async function saveSettings() {
         saveButtonDisabled = true
         settingsSaved = false
+        saveError = ""
 
         try {
-            await Promise.all([
-                invoke("db_write", { key: "assistant_voice", val: voiceVal }),
-                invoke("db_write", { key: "selected_microphone", val: selectedMicrophone }),
-                invoke("db_write", { key: "selected_wake_word_engine", val: selectedWakeWordEngine }),
-                invoke("db_write", { key: "selected_intent_recognition_engine", val: selectedIntentRecognitionEngine }),
-                invoke("db_write", { key: "selected_slot_extraction_engine", val: selectedSlotExtractionEngine }),
-                invoke("db_write", { key: "selected_gliner_model", val: selectedGlinerModel }),
-                invoke("db_write", { key: "selected_vosk_model", val: selectedVoskModel }),
+            // one call, not twelve. db_write_many validates every entry before
+            // it writes anything, so a rejected value cannot leave the db half
+            // saved, and app.db is rewritten once instead of once per field
+            await invoke("db_write_many", {
+                entries: {
+                    assistant_voice: voiceVal,
+                    selected_microphone: selectedMicrophone,
+                    selected_wake_word_engine: selectedWakeWordEngine,
+                    intent_backend: selectedIntentRecognitionEngine,
+                    slots_backend: selectedSlotExtractionEngine,
+                    selected_gliner_model: selectedGlinerModel,
+                    selected_vosk_model: selectedVoskModel,
 
-                invoke("db_write", { key: "noise_suppression", val: selectedNoiseSuppression }),
-                invoke("db_write", { key: "vad", val: selectedVad }),
-                invoke("db_write", { key: "gain_normalizer", val: gainNormalizerEnabled.toString() }),
+                    noise_suppression: selectedNoiseSuppression,
+                    vad_backend: selectedVad,
+                    gain_normalizer: gainNormalizerEnabled.toString(),
 
-                invoke("db_write", { key: "api_key__picovoice", val: apiKeyPicovoice }),
-                invoke("db_write", { key: "api_key__openai", val: apiKeyOpenai })
-            ])
+                    api_key__picovoice: apiKeyPicovoice,
+                    api_key__openai: apiKeyOpenai
+                }
+            })
 
             // update shared store
             assistantVoice.set(voiceVal)
@@ -133,6 +167,7 @@
             // stopListening(() => startListening())
         } catch (err) {
             console.error("failed to save settings:", err)
+            saveError = typeof err === "string" ? err : String(err)
         }
 
         setTimeout(() => {
@@ -142,6 +177,28 @@
 
     // ### INIT
     onMount(async () => {
+        // backend options first: everything below this is slower (voice
+        // scanning, and pv_get_audio_devices in particular), and until these
+        // land the three backend selects have no options and the slots alert
+        // would claim nothing is installed.
+        // own try/catch: this must never abort the settings load below
+        try {
+            const [intentOpts, slotsOpts, vadOpts] = await Promise.all([
+                invoke<BackendOption[]>("list_backend_options", { task: "intent" }),
+                invoke<BackendOption[]>("list_backend_options", { task: "slots" }),
+                invoke<BackendOption[]>("list_backend_options", { task: "vad" })
+            ])
+            intentBackends = intentOpts
+            slotsBackends = slotsOpts
+            vadBackends = vadOpts
+        } catch (err) {
+            console.error("Failed to load backend options:", err)
+            intentBackends = []
+            slotsBackends = []
+            vadBackends = []
+        }
+        backendsLoaded = true
+
         // load voices
         try {
             const voices = await invoke<VoiceConfig[]>("list_voices")
@@ -191,13 +248,13 @@
                    pico, openai] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
-                invoke<string>("db_read", { key: "selected_intent_recognition_engine" }),
-                invoke<string>("db_read", { key: "selected_slot_extraction_engine" }),
+                invoke<string>("db_read", { key: "intent_backend" }),
+                invoke<string>("db_read", { key: "slots_backend" }),
                 invoke<string>("db_read", { key: "selected_gliner_model" }),
                 invoke<string>("db_read", { key: "selected_vosk_model" }),
 
                 invoke<string>("db_read", { key: "noise_suppression" }),
-                invoke<string>("db_read", { key: "vad" }),
+                invoke<string>("db_read", { key: "vad_backend" }),
                 invoke<string>("db_read", { key: "gain_normalizer" }),
 
                 invoke<string>("db_read", { key: "api_key__picovoice" }),
@@ -215,6 +272,26 @@
             gainNormalizerEnabled = gainNormalizer === "true"
             apiKeyPicovoice = pico
             apiKeyOpenai = openai
+
+            // never hold a value that is not in its option list: NativeSelect
+            // shows option[0] while the variable keeps the stale id (it renders
+            // selected={item.value === value}), and Save writes the stale id back.
+            //
+            // falls back to the option the registry marks as default, NOT to
+            // opts[0]: opts[0] is always "none", so clamping there would quietly
+            // switch intent recognition off, while the Rust clamp
+            // (Settings::sanitize_backends -> catalog::default_backend) would put
+            // it on "intent-classifier". both sides now read the same value.
+            const clamp = (val: string, opts: BackendOption[]) => {
+                if (opts.length === 0 || opts.some(o => o.id === val)) return val
+                const fallback = opts.find(o => o.is_default) ?? opts[0]
+                console.warn(`backend '${val}' is not available, using '${fallback.id}'`)
+                return fallback.id
+            }
+
+            selectedIntentRecognitionEngine = clamp(selectedIntentRecognitionEngine, intentBackends)
+            selectedSlotExtractionEngine = clamp(selectedSlotExtractionEngine, slotsBackends)
+            selectedVad = clamp(selectedVad, vadBackends)
         } catch (err) {
             console.error("failed to load settings:", err)
         }
@@ -252,6 +329,18 @@
         color="teal"
         on:close={() => { settingsSaved = false }}
     />
+    <Space h="xl" />
+{/if}
+
+{#if saveError}
+    <Notification
+        title={t('notification-error')}
+        icon={CrossCircled}
+        color="red"
+        on:close={() => { saveError = "" }}
+    >
+        {saveError}
+    </Notification>
     <Space h="xl" />
 {/if}
 
@@ -309,11 +398,18 @@
 
     <Tabs.Tab label={t('settings-neural-networks')} icon={Cube}>
         <Space h="sm" />
+        <!--
+            values must be the WakeWordEngine variant names: db_read returns
+            format!("{:?}", ..) so this is what comes back on load, and
+            Settings::set lowercases before matching rustpotter|vosk|porcupine.
+            "Picovoice" was neither - it displayed as unselected on load and
+            made db_write reject, which now fails the whole save.
+        -->
         <NativeSelect
             data={[
                 { label: "Rustpotter", value: "Rustpotter" },
                 { label: "Vosk", value: "Vosk" },
-                { label: "Picovoice Porcupine", value: "Picovoice" }
+                { label: "Picovoice Porcupine", value: "Porcupine" }
             ]}
             label={t('settings-wake-word-engine')}
             description={t('settings-wake-word-desc')}
@@ -321,7 +417,7 @@
             bind:value={selectedWakeWordEngine}
         />
 
-        {#if selectedWakeWordEngine === "picovoice"}
+        {#if selectedWakeWordEngine === "Porcupine"}
             <Space h="sm" />
             <Alert title={t('settings-attention')} color="#868E96" variant="outline">
                 <Notification
@@ -372,30 +468,37 @@
         {/if}
 
         <Space h="xl" />
+        {#key intentSelectData}
         <NativeSelect
-            data={[
-                { label: "Intent Classifier", value: "IntentClassifier" },
-                { label: "Embedding Classifier", value: "EmbeddingClassifier" }
-            ]}
+            data={intentSelectData}
             label={t('settings-intent-engine')}
             description={t('settings-intent-engine-desc')}
             variant="filled"
             bind:value={selectedIntentRecognitionEngine}
         />
+        {/key}
 
         <Space h="xl" />
+        {#key slotsSelectData}
         <NativeSelect
-            data={[
-                { label: t('settings-disabled'), value: "None" },
-                { label: "GLiNER (NER)", value: "GLiNER" }
-            ]}
+            data={slotsSelectData}
             label={t('settings-slot-engine')}
             description={t('settings-slot-engine-desc')}
             variant="filled"
             bind:value={selectedSlotExtractionEngine}
         />
+        {/key}
 
-        {#if selectedSlotExtractionEngine === "GLiNER"}
+        {#if backendsLoaded && slotsBackends.length <= 1}
+            <Space h="sm" />
+            <Alert title={t('settings-models-not-found')} color="orange" variant="outline">
+                <Text size="sm" color="gray">
+                    {t('settings-slots-no-backends')}
+                </Text>
+            </Alert>
+        {/if}
+
+        {#if selectedSlotExtractionEngine && selectedSlotExtractionEngine !== "none"}
             <Space h="sm" />
             {#key availableGlinerModels}
             <NativeSelect
@@ -434,17 +537,15 @@
 
         <Space h="md" />
 
+        {#key vadSelectData}
         <NativeSelect
-            data={[
-                { label: t('settings-disabled'), value: "None" },
-                { label: "Energy", value: "Energy" },
-                { label: "Nnnoiseless", value: "Nnnoiseless" }
-            ]}
+            data={vadSelectData}
             label={t('settings-vad')}
             description={t('settings-vad-desc')}
             variant="filled"
             bind:value={selectedVad}
         />
+        {/key}
 
         <Space h="md" />
 

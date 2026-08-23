@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use jarvis_core::{COMMANDS_LIST, DB, JCommandsList, commands, config, db, intent};
+use jarvis_core::{DB, JCommandsList, commands, config, db, intent};
 
 fn print_help() {
     println!("
@@ -121,11 +121,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Vec::new()
         }
     };
-    COMMANDS_LIST.set(cmds).expect("Failed to set commands list");
-    
+    jarvis_core::set_commands_list(cmds);
+
     // init intent classifier
     println!("[*] Initializing intent classifier...");
-    match intent::init(COMMANDS_LIST.get().unwrap()).await {
+    let cmds = jarvis_core::commands_list();
+    match intent::init(&cmds).await {
         Ok(_) => println!("    Intent classifier ready"),
         Err(e) => println!("    Warning: {}", e),
     }
@@ -162,10 +163,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
             "help" | "h" | "?" => print_help(),
-            "list" | "ls" => list_commands(COMMANDS_LIST.get().unwrap()),
-            "phrases" => list_phrases(COMMANDS_LIST.get().unwrap()),
+            "list" | "ls" => list_commands(&jarvis_core::commands_list()),
+            "phrases" => list_phrases(&jarvis_core::commands_list()),
             "hash" => {
-                let hash = commands::commands_hash(COMMANDS_LIST.get().unwrap());
+                let hash = commands::commands_hash(&jarvis_core::commands_list());
                 println!("  Commands hash: {}", hash);
             }
             "settings" => {
@@ -186,11 +187,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if arg.is_empty() {
                     println!("  Usage: execute <text>");
                 } else {
-                    execute_text(COMMANDS_LIST.get().unwrap(), arg).await;
+                    execute_text(&jarvis_core::commands_list(), arg).await;
                 }
             }
             "reload" => {
-                println!("  Note: Reload requires app restart (statics can't be reset)");
+                match jarvis_core::reload::reload_all().await {
+                    Ok(r) => {
+                        println!(
+                            "  Reloaded {} pack(s), {} command(s){}",
+                            r.packs, r.commands,
+                            if r.retrained { ", intent classifier retrained" } else { "" }
+                        );
+                        if !r.skipped.is_empty() {
+                            println!("  Dropped unparseable pack(s): {}", r.skipped.join(", "));
+                        }
+                        if let Some(e) = r.retrain_error {
+                            println!("  Commands are live, but intent recognition is stale: {}", e);
+                        }
+                    }
+                    Err(e) => println!("  Reload failed: {} (previous commands still active)", e),
+                }
             }
             _ => {
                 // treat unknown commands as text to classify

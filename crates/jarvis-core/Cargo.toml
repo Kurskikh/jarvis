@@ -37,7 +37,7 @@ vosk = { version = "0.3.1", optional = true }
 intent-classifier = { version = "0.1.0", optional = true }
 # rustpotter = { workspace = true, optional = true }
 
-tokio = { version = "1", features = ["sync"], optional = true }
+tokio = { version = "1", features = ["sync", "rt"], optional = true }
 
 mlua = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
@@ -51,6 +51,8 @@ regex = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winrt-notification = { workspace = true, optional = true }
+# not optional - the "ahk" command type is not feature gated
+windows-registry = { workspace = true }
 
 [features]
 default = ["jarvis_app"]

@@ -1,7 +1,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::SystemTime;
 
-use jarvis_core::{audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, recorder, stt, COMMANDS_LIST, intent, voices, ipc::{self, IpcEvent}, i18n, slots};
+use jarvis_core::{audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, recorder, stt, intent, voices, ipc::{self, IpcEvent}, i18n, slots};
 use rand::seq::SliceRandom;
 
 use crate::should_stop;
@@ -342,23 +342,37 @@ fn process_text_command(text: &str, rt: &tokio::runtime::Runtime) {
 
 // Execute command, returns true if chaining should continue
 fn execute_command(text: &str, rt: &tokio::runtime::Runtime) -> bool {
-    let commands_list = match COMMANDS_LIST.get() {
-        Some(c) => c,
-        None => {
-            ipc::send(IpcEvent::Error { message: "Commands not loaded".to_string() });
-            ipc::send(IpcEvent::Idle);
-            return false;
+    // one Arc snapshot per utterance. the &JCommand borrowed below outlives the
+    // whole command execution, so it must not come from a lock guard
+    let commands_list = jarvis_core::commands_list();
+
+    if commands_list.is_empty() {
+        ipc::send(IpcEvent::Error { message: "Commands not loaded".to_string() });
+        ipc::send(IpcEvent::Idle);
+        return false;
+    }
+
+    // the intent branch is tried first, but it must not be able to SWALLOW the
+    // utterance: a classifier trained on a command list that has since changed
+    // can return an id nothing in the current list answers to, and taking that
+    // as "not found" drops the phrase instead of trying the fuzzy matcher.
+    let cmd_result = match rt.block_on(intent::classify(text)) {
+        Some((intent_id, confidence)) => {
+            info!("Intent recognized: {} (confidence: {:.2})", intent_id, confidence);
+
+            match intent::get_command_by_intent(&commands_list, &intent_id) {
+                Some(found) => Some(found),
+                None => {
+                    warn!("Intent '{}' does not resolve to a command, \
+                           trying levenshtein fallback...", intent_id);
+                    commands::fetch_command(text, &commands_list)
+                }
+            }
         }
-    };
-    
-    let cmd_result = if let Some((intent_id, confidence)) = 
-        rt.block_on(intent::classify(text)) 
-    {
-        info!("Intent recognized: {} (confidence: {:.2})", intent_id, confidence);
-        intent::get_command_by_intent(commands_list, &intent_id)
-    } else {
-        info!("Intent not recognized, trying levenshtein fallback...");
-        commands::fetch_command(text, commands_list)
+        None => {
+            info!("Intent not recognized, trying levenshtein fallback...");
+            commands::fetch_command(text, &commands_list)
+        }
     };
     
     if let Some((cmd_path, cmd_config)) = cmd_result {

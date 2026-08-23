@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::{Mutex, RwLock};
 
 use super::structs::ModelDef;
@@ -10,6 +11,10 @@ use super::structs::ModelDef;
 pub struct ModelRegistry {
     loaded: Mutex<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     catalog: RwLock<Vec<ModelDef>>,
+    // whether the models directory existed and could be read at scan time.
+    // false means "we know nothing about models here", which is NOT the same
+    // as "there are no models" - validation must not reject on it.
+    catalog_available: AtomicBool,
 }
 
 impl ModelRegistry {
@@ -17,11 +22,18 @@ impl ModelRegistry {
         Self {
             loaded: Mutex::new(HashMap::new()),
             catalog: RwLock::new(Vec::new()),
+            catalog_available: AtomicBool::new(false),
         }
     }
 
-    pub fn set_catalog(&self, defs: Vec<ModelDef>) {
+    pub fn set_catalog(&self, defs: Vec<ModelDef>, available: bool) {
         *self.catalog.write() = defs;
+        self.catalog_available.store(available, Ordering::Release);
+    }
+
+    // true when the models directory was actually scanned
+    pub fn catalog_available(&self) -> bool {
+        self.catalog_available.load(Ordering::Acquire)
     }
 
     // read access to catalog without cloning the whole vec

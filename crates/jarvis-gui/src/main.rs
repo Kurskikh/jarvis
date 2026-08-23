@@ -1,12 +1,14 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use jarvis_core::{config, db, i18n, voices, DB, SettingsManager};
+use jarvis_core::{config, db, i18n, models, voices, DB, SettingsManager};
 
 #[macro_use]
 extern crate simple_log;
 
 mod events;
+
+mod commands_editor;
 
 mod tauri_commands;
 
@@ -23,6 +25,16 @@ fn main() {
 
     // init settings
     let manager = db::init();
+
+    // init models registry (scans resources/models for model.toml descriptors).
+    // must run before any command that touches models::get_options
+    if let Err(e) = models::init() {
+        warn!("Models registry init failed: {}", e);
+    }
+
+    // clamp any backend setting the registry does not recognise (old/hand-edited
+    // app.db). runs after models::init(), before the settings page can read them
+    manager.sanitize_backends();
 
     // init i18n
     i18n::init(&manager.lock().language);
@@ -41,6 +53,13 @@ fn main() {
     DB.set(manager.arc().clone())
             .expect("DB already initialized");
 
+    // load the command list into the process-shared snapshot. must run after
+    // i18n::init (reload_list hashes the current-language phrases). every
+    // editor write republishes it, so get_commands_count() never goes stale
+    if let Err(e) = jarvis_core::reload::reload_list() {
+        warn!("Failed to load commands: {}", e);
+    }
+
     tauri::Builder::default()
         .manage(AppState { settings: manager })
         .plugin(tauri_plugin_shell::init())
@@ -55,6 +74,7 @@ fn main() {
             // db
             tauri_commands::db_read,
             tauri_commands::db_write,
+            tauri_commands::db_write_many,
 
             // etc
             tauri_commands::get_app_version,
@@ -84,6 +104,9 @@ fn main() {
             // gliner
             tauri_commands::list_gliner_models,
 
+            // model registry
+            tauri_commands::list_backend_options,
+
             // i18n
             tauri_commands::get_translations,
             tauri_commands::translate,
@@ -94,6 +117,21 @@ fn main() {
             // commands
             tauri_commands::get_commands_count,
             tauri_commands::get_commands_list,
+
+            // command editor
+            tauri_commands::list_command_packs,
+            tauri_commands::read_command_pack,
+            tauri_commands::save_command_pack,
+            tauri_commands::create_command_pack,
+            tauri_commands::delete_command_pack,
+            tauri_commands::validate_command_pack,
+            tauri_commands::read_command_pack_raw,
+            tauri_commands::save_command_pack_raw,
+            tauri_commands::list_pack_files,
+            tauri_commands::list_sound_names,
+            tauri_commands::get_command_types,
+            tauri_commands::get_sandbox_levels,
+            tauri_commands::get_default_timeout,
 
             // voices
             tauri_commands::list_voices,

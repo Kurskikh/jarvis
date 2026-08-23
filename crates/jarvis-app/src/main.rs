@@ -5,10 +5,11 @@ use std::sync::mpsc;
 
 // include core
 use jarvis_core::{
-    audio, audio_processing, commands, config, db, listener, recorder, stt, intent,
-    ipc::{self, IpcAction},
+    audio, audio_processing, commands, config, db, listener, recorder, reload, stt, intent,
+    ipc::{self, IpcAction, IpcEvent},
     i18n, voices, models,
-    APP_CONFIG_DIR, APP_LOG_DIR, COMMANDS_LIST, DB,
+    commands_list, set_commands_list,
+    APP_CONFIG_DIR, APP_LOG_DIR, DB,
 };
 
 // include log
@@ -65,6 +66,10 @@ fn main() -> Result<(), String> {
         warn!("Models registry init failed: {}", e);
     }
 
+    // clamp backend settings against the registry BEFORE anything consumes them.
+    // this is what keeps a bogus intent_backend out of the app::close(1) path below
+    settings.sanitize_backends();
+
     // init stt engine
     if stt::init().is_err() {
         // @TODO. Allow continuing even without STT, if commands is using keywords or smthng?
@@ -81,7 +86,7 @@ fn main() -> Result<(), String> {
         }
     };
     info!("Commands initialized. Count: {}, List: {:?}", cmds.len(), commands::list_paths(&cmds));
-    COMMANDS_LIST.set(cmds).unwrap();
+    set_commands_list(cmds);
 
     // init audio
     if audio::init().is_err() {
@@ -100,11 +105,15 @@ fn main() -> Result<(), String> {
         tokio::runtime::Runtime::new().expect("Failed to create tokio runtime")
     );
 
-    // init intent-recognition engine
+    // init intent-recognition engine.
+    // intent::init() degrades internally (requested backend -> configured
+    // default -> "none"), so this is a log line, not an exit: a settings value
+    // must never be able to make the assistant quit with no window and no
+    // message. The user can still change the backend from the GUI afterwards.
+    let cmds = commands_list();
     rt.block_on(async {
-        if let Err(e) = intent::init(COMMANDS_LIST.get().unwrap()).await {
-            error!("Failed to initialize intent classifier: {}", e);
-            app::close(1);
+        if let Err(e) = intent::init(&cmds).await {
+            error!("Intent recognition unavailable: {}", e);
         }
     });
 
@@ -130,9 +139,59 @@ fn main() -> Result<(), String> {
                 info!("Received stop command from GUI");
                 SHOULD_STOP.store(true, Ordering::SeqCst);
             }
-            IpcAction::ReloadCommands => {
+            IpcAction::ReloadCommands { request_id } => {
                 info!("Received reload commands request");
-                // TODO: implement reload
+
+                // this closure runs on a tokio worker, INSIDE runtime context and
+                // while the IPC server holds the ACTION_HANDLER read guard. so it
+                // must return immediately: rt.block_on() here panics ("Cannot
+                // start a runtime from within a runtime"), and any long blocking
+                // work stalls this client's handle_client select loop, cutting
+                // IpcEvent delivery to the GUI that just asked for the reload.
+                tokio::spawn(async move {
+                    match reload::reload_all().await {
+                        Ok(r) => {
+                            info!("Commands reloaded: {} pack(s), {} command(s), retrained: {}",
+                                  r.packs, r.commands, r.retrained);
+
+                            // these two are NOT failures of the swap - the new
+                            // list is live either way - but they are not a
+                            // clean reload either, so they travel with ok:true
+                            if !r.skipped.is_empty() {
+                                warn!("Reload dropped unparseable pack(s): {}", r.skipped.join(", "));
+                            }
+                            if let Some(ref e) = r.retrain_error {
+                                error!("Commands are live but intent recognition is stale: {}", e);
+                            }
+
+                            ipc::send(IpcEvent::CommandsReloaded {
+                                request_id,
+                                ok: true,
+                                packs: r.packs,
+                                commands: r.commands,
+                                retrained: r.retrained,
+                                skipped: r.skipped,
+                                retrain_error: r.retrain_error,
+                                error: None,
+                            });
+                        }
+                        Err(e) => {
+                            // reload_all() only returns Err before the swap, so
+                            // this really is "nothing changed"
+                            error!("Commands reload failed: {}. Previous commands stay active.", e);
+                            ipc::send(IpcEvent::CommandsReloaded {
+                                request_id,
+                                ok: false,
+                                packs: 0,
+                                commands: 0,
+                                retrained: false,
+                                skipped: Vec::new(),
+                                retrain_error: None,
+                                error: Some(e),
+                            });
+                        }
+                    }
+                });
             }
             IpcAction::SetMuted { muted } => {
                 info!("Received mute request: {}", muted);

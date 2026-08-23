@@ -38,3 +38,11 @@ pub use commands::*;
 // import voices commands
 mod voices;
 pub use voices::*;
+
+// import model-registry backend pickers
+mod backends;
+pub use backends::*;
+
+// import COMMAND EDITOR commands
+mod commands_editor;
+pub use commands_editor::*;

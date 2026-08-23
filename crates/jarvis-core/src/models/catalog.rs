@@ -1,22 +1,34 @@
 use std::fs;
 use std::path::Path;
 
+use crate::config;
 use super::structs::{Task, ModelDef, BackendOption};
 
+// result of a models-directory scan.
+//
+// `dir_available` distinguishes "the models directory was there and we read it"
+// from "there is no models directory in this install". an empty `models` vec
+// alone cannot tell those apart, and treating the second case as authoritative
+// makes validation reset perfectly good settings (see models::check_backend).
+pub struct ScanResult {
+    pub models: Vec<ModelDef>,
+    pub dir_available: bool,
+}
+
 // scan the models directory for folders containing model.toml
-pub fn scan_models(models_dir: &Path) -> Vec<ModelDef> {
+pub fn scan_models(models_dir: &Path) -> ScanResult {
     let mut models = Vec::new();
 
     if !models_dir.exists() {
         warn!("Models directory not found: {:?}", models_dir);
-        return models;
+        return ScanResult { models, dir_available: false };
     }
 
     let entries = match fs::read_dir(models_dir) {
         Ok(e) => e,
         Err(e) => {
             warn!("Failed to read models dir: {}", e);
-            return models;
+            return ScanResult { models, dir_available: false };
         }
     };
 
@@ -32,7 +44,33 @@ pub fn scan_models(models_dir: &Path) -> Vec<ModelDef> {
         }
 
         match load_model_def(&toml_path, &path) {
-            Ok(def) => {
+            Ok(mut def) => {
+                // a descriptor is not a model. model.toml is the only file in
+                // resources/models that is version controlled, so a fresh clone
+                // (or a partial download) has descriptors whose weights are
+                // missing. keep only the tasks whose loader can actually run,
+                // otherwise the id would be offered in the UI, pass validation,
+                // and then fail at load time.
+                let declared = def.tasks.len();
+                def.tasks.retain(|task| task_files_present(*task, &path));
+
+                if def.tasks.is_empty() {
+                    warn!(
+                        "Skipping model '{}' ({:?}): none of its declared tasks have \
+                         their required files on disk",
+                        def.id, path
+                    );
+                    continue;
+                }
+
+                if def.tasks.len() != declared {
+                    warn!(
+                        "Model '{}': some declared tasks are missing their files and \
+                         were dropped, keeping {:?}",
+                        def.id, def.tasks
+                    );
+                }
+
                 info!("Found model: {} ({}) - tasks: {:?}", def.name, def.id, def.tasks);
                 models.push(def);
             }
@@ -40,7 +78,36 @@ pub fn scan_models(models_dir: &Path) -> Vec<ModelDef> {
         }
     }
 
-    models
+    ScanResult { models, dir_available: true }
+}
+
+// files each loader reads, relative to the model directory.
+// KEEP IN SYNC with models/loaders/*.rs - this is what makes catalog
+// membership imply loadability.
+fn task_files_present(task: Task, model_dir: &Path) -> bool {
+    match task {
+        // loaders/embedding.rs
+        Task::Intent => [
+            "model.onnx",
+            "tokenizer.json",
+            "config.json",
+            "special_tokens_map.json",
+            "tokenizer_config.json",
+        ]
+        .iter()
+        .all(|f| model_dir.join(f).is_file()),
+
+        // loaders/gliner.rs - onnx/model.onnx when the subfolder exists,
+        // model.onnx otherwise, plus the tokenizer
+        Task::Slots => {
+            model_dir.join("tokenizer.json").is_file()
+                && (model_dir.join("onnx").join("model.onnx").is_file()
+                    || model_dir.join("model.onnx").is_file())
+        }
+
+        // no descriptor-driven backends for these yet; nothing to verify
+        Task::Vad | Task::NoiseSuppression | Task::Stt => true,
+    }
 }
 
 fn load_model_def(toml_path: &Path, model_dir: &Path) -> Result<ModelDef, String> {
@@ -69,6 +136,7 @@ pub fn code_backends(task: Task) -> Vec<BackendOption> {
                 id: "intent-classifier".into(),
                 name: "Intent Classifier".into(),
                 model_id: None,
+                is_default: false,
             },
         ],
         Task::Slots => vec![],
@@ -77,11 +145,18 @@ pub fn code_backends(task: Task) -> Vec<BackendOption> {
                 id: "energy".into(),
                 name: "Energy-based".into(),
                 model_id: None,
+                is_default: false,
             },
+            // NOTE: deliberately NOT #[cfg(feature = "nnnoiseless")].
+            // this list is rendered by jarvis-gui, which links jarvis-core with
+            // default-features = false, while the process that actually runs VAD
+            // is jarvis-app, which enables the feature. gating here would hide a
+            // backend the running app supports.
             BackendOption {
                 id: "nnnoiseless".into(),
                 name: "Nnnoiseless".into(),
                 model_id: None,
+                is_default: false,
             },
         ],
         Task::NoiseSuppression => vec![
@@ -89,6 +164,7 @@ pub fn code_backends(task: Task) -> Vec<BackendOption> {
                 id: "nnnoiseless".into(),
                 name: "Nnnoiseless".into(),
                 model_id: None,
+                is_default: false,
             },
         ],
         Task::Stt => vec![
@@ -96,9 +172,30 @@ pub fn code_backends(task: Task) -> Vec<BackendOption> {
                 id: "vosk".into(),
                 name: "Vosk".into(),
                 model_id: None,
+                is_default: false,
             },
         ],
     }
+}
+
+// the id a task falls back to when the stored value cannot be used.
+// single source of truth for both the Rust clamp (Settings::sanitize_backends)
+// and the frontend clamp, which reads it off BackendOption::is_default.
+pub fn default_backend(task: Task) -> &'static str {
+    match task {
+        Task::Intent => config::DEFAULT_INTENT_BACKEND,
+        Task::Slots => config::DEFAULT_SLOTS_BACKEND,
+        Task::Vad => config::DEFAULT_VAD_BACKEND,
+        // these two are stored as enums, not backend ids; their defaults are
+        // NoiseSuppressionBackend::None / SpeechToTextEngine::Vosk
+        Task::NoiseSuppression => "none",
+        Task::Stt => "vosk",
+    }
+}
+
+// "none" and the code backends exist regardless of what is on disk
+pub fn is_builtin_backend(task: Task, backend_id: &str) -> bool {
+    backend_id == "none" || code_backends(task).iter().any(|b| b.id == backend_id)
 }
 
 // get all available options for a task:
@@ -109,6 +206,7 @@ pub fn get_options(task: Task, models: &[ModelDef]) -> Vec<BackendOption> {
             id: "none".into(),
             name: "Disabled".into(),
             model_id: None,
+            is_default: false,
         },
     ];
 
@@ -120,19 +218,21 @@ pub fn get_options(task: Task, models: &[ModelDef]) -> Vec<BackendOption> {
                 id: model.id.clone(),
                 name: model.name.clone(),
                 model_id: Some(model.id.clone()),
+                is_default: false,
             });
         }
+    }
+
+    let default_id = default_backend(task);
+    for option in options.iter_mut() {
+        option.is_default = option.id == default_id;
     }
 
     options
 }
 
 pub fn is_valid_backend(task: Task, backend_id: &str, models: &[ModelDef]) -> bool {
-    if backend_id == "none" {
-        return true;
-    }
-
-    if code_backends(task).iter().any(|b| b.id == backend_id) {
+    if is_builtin_backend(task, backend_id) {
         return true;
     }
 

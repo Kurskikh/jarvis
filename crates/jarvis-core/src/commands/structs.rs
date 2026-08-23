@@ -23,9 +23,13 @@ pub struct JCommand {
     #[serde(default)]
     pub description: String,
     
-    // for "ahk" type
+    // for "ahk" type: either a compiled ".exe", or an ".ahk" source file run
+    // through the AutoHotkey interpreter located on this machine.
+    // relative to the command pack directory unless absolute.
     #[serde(default)]
     pub exe_path: String,
+    // passed positionally to the target - for an ".ahk" source these arrive as
+    // %1%, %2% (v1) or A_Args[1], A_Args[2] (v2) inside the script itself
     #[serde(default)]
     pub exe_args: Vec<String>,
     

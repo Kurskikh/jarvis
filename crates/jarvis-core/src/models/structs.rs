@@ -35,4 +35,8 @@ pub struct BackendOption {
     // if Some, this option uses a model from the registry.
     // if None, it's a code-only backend (like energy VAD) or disabled.
     pub model_id: Option<String>,
+    // true for the id this task falls back to when the stored value is
+    // unusable (catalog::default_backend). the frontend clamps to this so it
+    // cannot disagree with Settings::sanitize_backends().
+    pub is_default: bool,
 }

@@ -23,7 +23,11 @@
     let launching = false
     let wasRunning = false  // track previous state
 
-    isJarvisRunning.subscribe((value) => {
+    // UNSUBSCRIBED on destroy. a leaked subscriber here outlives the route and
+    // keeps calling disableIpc() from a page the user left - which latches
+    // manualDisconnect and kills the socket the commands editor needs to
+    // confirm a hot reload. every return visit used to add another one.
+    const unsubscribeRunning = isJarvisRunning.subscribe((value) => {
         processRunning = value
         if (value) {
             enableIpc()
@@ -39,9 +43,7 @@
         updateJarvisStats()
     })
 
-    onDestroy(() => {
-        disableIpc()
-    })
+    onDestroy(unsubscribeRunning)
 
     async function runAssistant() {
         launching = true

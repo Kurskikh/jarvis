@@ -6,11 +6,29 @@ import { getCurrentWindow } from "@tauri-apps/api/window"
 
 export type JarvisState = "disconnected" | "idle" | "listening" | "processing"
 
+// answer to the reload_commands action, as reported by the running assistant.
+//
+// `ok` means the new list is LIVE, not that everything went well: `skipped`
+// names packs that were dropped because their TOML does not parse, and
+// retrainError means the commands are live but the intent classifier could not
+// be rebuilt on them. Both travel with ok:true and both need saying out loud.
+export type ReloadResult = {
+    requestId: string | null
+    ok: boolean
+    packs: number
+    commands: number
+    retrained: boolean
+    skipped: string[]
+    retrainError: string | null
+    error: string | null
+}
+
 export const jarvisState = writable<JarvisState>("disconnected")
 export const ipcConnected = writable(false)
 export const lastRecognizedText = writable("")
 export const lastExecutedCommand = writable("")
 export const lastError = writable("")
+export const lastReload = writable<ReloadResult | null>(null)
 
 // ### CONNECTION ###
 
@@ -24,6 +42,9 @@ let enabled = false  // only connect when enabled
 
 export function enableIpc() {
     enabled = true
+    // disableIpc() latched this and nothing ever reset it, so every page that
+    // re-enabled IPC after a stop got a socket that could never reconnect
+    manualDisconnect = false
     connectIpc()
 }
 
@@ -133,7 +154,87 @@ function handleEvent(data: any) {
             // bring window to foreground
             revealWindow()
             break
+
+        case "commands_reloaded":
+            lastReload.set({
+                requestId: data.request_id ?? null,
+                ok: !!data.ok,
+                packs: data.packs ?? 0,
+                commands: data.commands ?? 0,
+                retrained: !!data.retrained,
+                skipped: Array.isArray(data.skipped) ? data.skipped : [],
+                retrainError: data.retrain_error ?? null,
+                error: data.error ?? null
+            })
+            break
     }
+}
+
+// resolves true as soon as the socket is up, false on timeout. the command
+// editor uses it to give a just-launched assistant a moment before it decides
+// the save could not be applied live.
+export function waitForIpcConnected(timeoutMs = 1500): Promise<boolean> {
+    if (get(ipcConnected)) return Promise.resolve(true)
+
+    return new Promise(resolve => {
+        let settled = false
+        let unsub: (() => void) | null = null
+        let timer: ReturnType<typeof setTimeout> | null = null
+
+        const finish = (ok: boolean) => {
+            if (settled) return
+            settled = true
+
+            if (timer !== null) clearTimeout(timer)
+            queueMicrotask(() => unsub?.())
+
+            resolve(ok)
+        }
+
+        timer = setTimeout(() => finish(false), timeoutMs)
+        unsub = ipcConnected.subscribe(value => { if (value) finish(true) })
+    })
+}
+
+// resolves on the commands_reloaded event carrying `requestId`, or null on
+// timeout.
+//
+// sendAction() is fire-and-forget and returns false silently when the socket is
+// closed, so this is the only way the command editor can tell "written to disk"
+// apart from "actually live in the running assistant".
+//
+// the id match is not decoration: without it a second save, a second window or
+// a `reload` typed into jarvis-cli resolves this wait, and save #2's banner
+// ends up reporting save #1's outcome.
+export function awaitReload(requestId: string, timeoutMs = 15000): Promise<ReloadResult | null> {
+    return new Promise(resolve => {
+        let settled = false
+        let unsub: (() => void) | null = null
+        let timer: ReturnType<typeof setTimeout> | null = null
+
+        const finish = (result: ReloadResult | null) => {
+            if (settled) return
+            settled = true
+
+            if (timer !== null) clearTimeout(timer)
+            // subscribe() fires synchronously, before unsub has been assigned
+            queueMicrotask(() => unsub?.())
+
+            resolve(result)
+        }
+
+        timer = setTimeout(() => finish(null), timeoutMs)
+
+        // the value already in the store belongs to an earlier reload
+        let replay = true
+        unsub = lastReload.subscribe(value => {
+            if (replay) {
+                replay = false
+                return
+            }
+            if (value && value.requestId === requestId) finish(value)
+        })
+    })
 }
 
 // ### ACTIONS ###
@@ -151,8 +252,12 @@ export function stopJarvisApp() {
     return sendAction("stop")
 }
 
-export function reloadCommands() {
-    return sendAction("reload_commands")
+// returns the request id the answering commands_reloaded event will echo, or
+// null when the socket is not open. pass it straight to awaitReload().
+export function reloadCommands(): string | null {
+    const requestId = `reload-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+
+    return sendAction("reload_commands", { request_id: requestId }) ? requestId : null
 }
 
 export function sendIpcMessage(message: object): Promise<void> {

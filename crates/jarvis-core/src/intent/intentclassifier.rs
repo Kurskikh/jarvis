@@ -57,6 +57,78 @@ pub async fn init(commands: &[JCommandsList]) -> Result<(), String> {
     Ok(())
 }
 
+// re-train from a new command list. reuses the Arc already in MODEL; the
+// OnceCell is never touched, so this can run any number of times.
+//
+// clear_training_data() first: train_classifier() only ever calls
+// add_training_example(), so re-running it on top of the existing data would
+// duplicate every example and skew confidences.
+//
+// ALL-OR-NOTHING. clear_training_data() empties training_data, vocabulary and
+// intent_patterns and reloads only the upstream crate's bootstrap examples, and
+// add_training_example() can reject an example mid-way. Without the snapshot
+// below a single bad example would leave the classifier holding bootstrap plus
+// a partial prefix of the commands - permanently, because nothing re-runs this.
+pub async fn retrain(commands: &[JCommandsList]) -> Result<(), String> {
+    let model = match MODEL.get() {
+        Some(m) => m,
+        None => {
+            warn!("IntentClassifier not initialized, skipping retrain");
+            return Ok(());
+        }
+    };
+
+    // taken BEFORE the clear, and only used on the failure path
+    let snapshot = model.classifier.export_training_data().await.ok();
+
+    model.classifier.clear_training_data().await
+        .map_err(|e| format!("Failed to clear training data: {}", e))?;
+
+    if let Err(e) = train_classifier(&model.classifier, commands).await {
+        restore_training_data(&model.classifier, snapshot).await;
+        return Err(e);
+    }
+
+    // rewrite the cache pair only AFTER a clean retrain. a hash file claiming
+    // to match a list it does not would make the next cold start load stale
+    // training data and never notice.
+    let config_dir = APP_CONFIG_DIR.get().ok_or("Config dir not set")?;
+    if let Ok(export) = model.classifier.export_training_data().await {
+        let _ = fs::write(config_dir.join(TRAINING_CACHE_FILE), export);
+        let _ = fs::write(config_dir.join(COMMANDS_HASH_FILE),
+                          commands::commands_hash(commands));
+    }
+
+    Ok(())
+}
+
+// put the pre-clear training data back after a failed retrain. best effort by
+// definition - if this fails too there is nothing left to fall back to, so it
+// is logged rather than propagated over the error that actually matters.
+async fn restore_training_data(
+    classifier: &intent_classifier::IntentClassifier,
+    snapshot: Option<String>,
+) {
+    let snapshot = match snapshot {
+        Some(s) => s,
+        None => {
+            error!("Retrain failed and no training snapshot was taken - \
+                    intent recognition is degraded until restart");
+            return;
+        }
+    };
+
+    if let Err(e) = classifier.clear_training_data().await {
+        error!("Failed to clear training data while rolling back a retrain: {}", e);
+        return;
+    }
+
+    match classifier.import_training_data(&snapshot).await {
+        Ok(()) => warn!("Retrain failed; previous training data restored"),
+        Err(e) => error!("Failed to restore training data after a failed retrain: {}", e),
+    }
+}
+
 pub async fn classify(text: &str) -> Result<IntentPrediction, IntentError> {
     let model = MODEL.get().expect("IntentClassifier not initialized");
     model.classifier.predict_intent(text).await
@@ -70,12 +142,21 @@ async fn train_classifier(
     info!("Training intent classifier for language: {}", lang);
 
     let mut total_examples = 0;
+    let mut blank = 0;
 
     for assistant_cmd in commands {
         for cmd in &assistant_cmd.commands {
             let phrases = cmd.get_phrases(&lang);
-            
+
             for phrase in phrases.iter() {
+                // add_training_example() rejects an empty text outright, which
+                // would abort the whole retrain over one stray blank line in a
+                // hand-edited pack. degrade the example, not the model.
+                if phrase.trim().is_empty() {
+                    blank += 1;
+                    continue;
+                }
+
                 let example = TrainingExample {
                     text: phrase.clone(),
                     intent: IntentId::from(cmd.id.as_str()),
@@ -89,6 +170,10 @@ async fn train_classifier(
                 total_examples += 1;
             }
         }
+    }
+
+    if blank > 0 {
+        warn!("Skipped {} blank phrase(s) while training", blank);
     }
 
     info!("Added {} training examples for language '{}'", total_examples, lang);

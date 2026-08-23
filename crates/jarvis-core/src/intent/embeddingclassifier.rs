@@ -3,14 +3,15 @@ use std::sync::Arc;
 use std::fs;
 
 use once_cell::sync::OnceCell;
+use parking_lot::RwLock;
 
 use crate::commands::JCommandsList;
 use crate::i18n;
 use crate::APP_CONFIG_DIR;
 use crate::models::embedding::EmbeddingModel;
 
-// no outer Mutex needed - state is immutable after init.
-// the embedding model has its own internal Mutex.
+// no outer Mutex needed - the model is immutable after init and has its own
+// internal Mutex, and the intent vectors are swapped through their own RwLock.
 static CLASSIFIER: OnceCell<EmbeddingClassifierState> = OnceCell::new();
 
 struct IntentVector {
@@ -20,10 +21,12 @@ struct IntentVector {
 
 struct EmbeddingClassifierState {
     model: Arc<EmbeddingModel>,
-    intents: Vec<IntentVector>,
+    // swappable so a reload can publish new vectors without re-creating the
+    // model. readers take an Arc snapshot, same reasoning as COMMANDS_LIST.
+    intents: RwLock<Arc<Vec<IntentVector>>>,
 }
 
-// model is Arc (Send+Sync), intents are read-only after init
+// model is Arc (Send+Sync), intents are behind an RwLock
 unsafe impl Send for EmbeddingClassifierState {}
 unsafe impl Sync for EmbeddingClassifierState {}
 
@@ -70,7 +73,7 @@ pub fn init_with_model(model: Arc<EmbeddingModel>, commands: &[JCommandsList]) -
 
     info!("Embedding classifier ready with {} intents", intents.len());
 
-    CLASSIFIER.set(EmbeddingClassifierState { model, intents })
+    CLASSIFIER.set(EmbeddingClassifierState { model, intents: RwLock::new(Arc::new(intents)) })
         .map_err(|_| "Classifier already set".to_string())?;
 
     Ok(())
@@ -131,7 +134,8 @@ fn build_intent_vectors(
 pub fn classify(text: &str) -> Result<(String, f64), String> {
     let state = CLASSIFIER.get().ok_or("Classifier not initialized")?;
     
-    // only the embedding model needs locking, intents are read-only
+    // the embedding model has its own Mutex; the intent vectors are snapshotted
+    // separately below
     let embeddings = state.model.embedding.lock().embed(vec![text], None)
         .map_err(|e| format!("Failed to embed query: {}", e))?;
     
@@ -150,7 +154,11 @@ pub fn classify(text: &str) -> Result<(String, f64), String> {
     let mut best_idx: usize = 0;
     let mut best_score: f64 = -1.0;
 
-    for (i, intent) in state.intents.iter().enumerate() {
+    // one Arc snapshot per query - a concurrent retrain must not be able to
+    // make this loop wait, nor to swap the vectors out from under it
+    let intents = state.intents.read().clone();
+
+    for (i, intent) in intents.iter().enumerate() {
         let score: f64 = query_vec.iter()
             .zip(intent.vector.iter())
             .map(|(a, b)| (*a as f64) * (*b as f64))
@@ -162,10 +170,42 @@ pub fn classify(text: &str) -> Result<(String, f64), String> {
         }
     }
 
-    let best_id = state.intents[best_idx].id.clone();
+    let best_id = intents[best_idx].id.clone();
     debug!("Embedding classify: '{}' -> '{}' ({:.2}%)", text, best_id, best_score * 100.0);
 
     Ok((best_id, best_score))
+}
+
+// rebuild the intent vectors from a new command list.
+pub async fn retrain(commands: Arc<Vec<JCommandsList>>) -> Result<(), String> {
+    let state = match CLASSIFIER.get() {
+        Some(s) => s,
+        None => {
+            warn!("Embedding classifier not initialized, skipping retrain");
+            return Ok(());
+        }
+    };
+
+    let model = Arc::clone(&state.model);
+    // computed BEFORE `commands` is moved into the closure
+    let current_hash = crate::commands::commands_hash(&commands);
+
+    // one ONNX forward per command, on the same parking_lot Mutex classify()
+    // uses. never on a runtime worker, never near the audio thread.
+    let built = tokio::task::spawn_blocking(move || build_intent_vectors(&model, &commands))
+        .await
+        .map_err(|e| format!("Embedding rebuild panicked: {}", e))??;
+
+    let config_dir = APP_CONFIG_DIR.get().ok_or("Config dir not set")?;
+    if let Ok(json) = serde_json::to_string(&intents_to_cache(&built)) {
+        let _ = fs::write(config_dir.join(CACHE_FILE), json);
+        let _ = fs::write(config_dir.join(HASH_FILE), &current_hash);
+    }
+
+    info!("Embedding classifier retrained with {} intents", built.len());
+    *state.intents.write() = Arc::new(built);
+
+    Ok(())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

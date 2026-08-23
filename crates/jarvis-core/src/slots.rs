@@ -13,20 +13,41 @@ pub fn init() -> Result<(), String> {
         return Ok(());
     }
 
-    let backend = DB.get()
+    let requested = DB.get()
         .map(|db| db.read().slots_backend.clone())
         .unwrap_or_else(|| "none".to_string());
 
-    BACKEND.set(backend.clone()).map_err(|_| "Slot backend already set")?;
+    // BACKEND is set from the outcome, not from the request: if the model does
+    // not load, extract() must dispatch to the disabled arm instead of calling
+    // into an uninitialized GLiNER on every single utterance
+    let attempt = init_backend(&requested);
 
-    match backend.as_str() {
+    let effective = match attempt {
+        Ok(()) => requested,
+        Err(e) => {
+            error!("Slot backend '{}' failed to initialize: {}. Slot extraction disabled.", requested, e);
+            "none".to_string()
+        }
+    };
+
+    BACKEND.set(effective).map_err(|_| "Slot backend already set")?;
+
+    Ok(())
+}
+
+fn init_backend(backend: &str) -> Result<(), String> {
+    match backend {
         "none" => {
             info!("Slot extraction disabled");
         }
         // any model ID is treated as a GLiNER model for now
         model_id => {
             info!("Initializing GLiNER slot extraction with model '{}'.", model_id);
-            let model = models::gliner::load(models::registry(), model_id)?;
+            // try_registry(), not registry(): a missed models::init() must be a
+            // recoverable error, not a panic
+            let registry = models::try_registry()
+                .ok_or_else(|| "model registry is not initialized".to_string())?;
+            let model = models::gliner::load(registry, model_id)?;
             gliner::init_with_model(model)?;
             info!("GLiNER slot extraction initialized.");
         }

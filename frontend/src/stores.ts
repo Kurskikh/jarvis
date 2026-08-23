@@ -8,6 +8,7 @@ export {
     lastRecognizedText,
     lastExecutedCommand,
     lastError,
+    lastReload,
     connectIpc,
     enableIpc,
     disableIpc,
@@ -16,8 +17,11 @@ export {
     sendIpcMessage,
     sendTextCommand,
     stopJarvisApp,
-    reloadCommands
+    reloadCommands,
+    awaitReload,
+    waitForIpcConnected
 } from "./lib/ipc"
+export type { ReloadResult } from "./lib/ipc"
 
 // re-export i18n
 export {
@@ -37,6 +41,20 @@ export const jarvisCpuUsage = writable(0)
 
 // ### ASSISTANT VOICE
 export const assistantVoice = writable("")
+
+// ### COMMANDS COUNT
+// Header lives in the persistent _module.svelte layout and never remounts, so
+// the badge has to be pushed a new value after every editor write
+export const commandsCount = writable(0)
+
+export async function refreshCommandsCount() {
+    try {
+        commandsCount.set(await invoke<number>("get_commands_count"))
+    } catch (err) {
+        console.error("failed to get commands count:", err)
+        commandsCount.set(0)
+    }
+}
 
 // ### APP INFO
 export const appInfo = writable({

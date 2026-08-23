@@ -22,7 +22,10 @@ pub fn init() -> broadcast::Sender<IpcEvent> {
         return tx.clone();
     }
 
-    let (tx, _) = broadcast::channel::<IpcEvent>(32);
+    // 32 was small enough that a burst of recognition events could overrun a
+    // client mid-reload; the Lagged arm below then DROPS the CommandsReloaded
+    // frame and the GUI reports a timeout for a reload that succeeded
+    let (tx, _) = broadcast::channel::<IpcEvent>(256);
     BROADCAST_TX.set(tx.clone()).ok();
     ACTION_HANDLER.set(Arc::new(RwLock::new(None))).ok();
     
