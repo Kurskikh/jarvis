@@ -1,0 +1,19 @@
+# Read by jarvis-core: models::catalog::scan_models() -> load_model_def()
+#   `struct ModelToml { model: ModelDef }`  => everything lives under [model]
+#   ModelDef: id (String), name (String), tasks (Vec<Task>), description (#[serde(default)])
+#   Task is #[serde(rename_all = "snake_case")]: intent | slots | vad | noise_suppression | stt
+#
+# `path` is #[serde(skip)] - the scanner overwrites it with this directory,
+# so no file names/paths belong in this file. models/loaders/embedding.rs
+# resolves model.onnx, tokenizer.json, config.json, tokenizer_config.json and
+# special_tokens_map.json itself, relative to this directory.
+#
+# `id` is the value stored in Settings.intent_backend: anything that is not
+# "none" or "intent-classifier" is passed straight to embedding::load() as a
+# model id (crates/jarvis-core/src/intent.rs:31-36).
+
+[model]
+id = "all-MiniLM-L6-v2"
+name = "all-MiniLM-L6-v2 (English)"
+tasks = ["intent"]
+description = "ONNX port (Qdrant/fastembed) of sentence-transformers/all-MiniLM-L6-v2. English BERT sentence encoder, 6 layers, 384-dim embeddings, 512-token context. Serves the embedding-based intent classifier."

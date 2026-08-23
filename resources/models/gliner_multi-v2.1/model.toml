@@ -1,0 +1,23 @@
+# Read by jarvis-core: models::catalog::scan_models() -> load_model_def()
+#   `struct ModelToml { model: ModelDef }`  => everything lives under [model]
+#   ModelDef: id (String), name (String), tasks (Vec<Task>), description (#[serde(default)])
+#   Task is #[serde(rename_all = "snake_case")]: intent | slots | vad | noise_suppression | stt
+#
+# `path` is #[serde(skip)] - the scanner overwrites it with this directory,
+# so no file names/paths belong in this file. models/loaders/gliner.rs resolves
+# onnx/model.onnx (or model.onnx) and tokenizer.json itself, relative to it.
+#
+# The weights are NOT in version control (see .gitignore) - only this
+# descriptor is. catalog::scan_models() checks the loader's required files
+# before publishing the model, so until the weights are downloaded into this
+# directory the id is not offered in the settings dropdown and cannot be
+# stored. Drop the files in and it appears with no code change.
+#
+# `id` is the value stored in Settings.slots_backend: anything that is not
+# "none" is passed to gliner::load() as a model id (slots.rs).
+
+[model]
+id = "gliner_multi-v2.1"
+name = "GLiNER multi v2.1 (multilingual)"
+tasks = ["slots"]
+description = "GLiNER multi v2.1, ONNX. Multilingual zero-shot named entity recognition used to pull slot values out of a recognized command. Pick this one for Russian/Ukrainian commands."
