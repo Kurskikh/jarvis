@@ -26,6 +26,8 @@
 .EXAMPLE
     .\tts.ps1 -Unload         keep serving but hand the video memory back
 .EXAMPLE
+    .\tts.ps1 -Preload        load the model at startup, the way it used to be
+.EXAMPLE
     .\tts.ps1 -Foreground     run in this window instead of a detached one
 #>
 param(
@@ -35,6 +37,7 @@ param(
     [switch]$Stop,
     [switch]$Unload,
     [switch]$Reload,
+    [switch]$Preload,
     [switch]$Foreground,
     [switch]$NoOpen,
     [switch]$ResetConfig
@@ -182,9 +185,17 @@ foreach ($key in $wanted) {
     # saved settings normally beat the command line, so there has to be a way
     # to say "no, actually, start over"
     if ($ResetConfig -and $key -eq 'qwen') { $argv += '--reset-config' }
+    # off by default: a 5 GB model taken at startup competes with whatever is
+    # already on the card, and a load that cannot finish looks like a sidecar
+    # that will not start
+    if ($Preload -and $key -eq 'qwen') { $argv += '--preload' }
 
     Step ("Starting {0} on port {1}" -f $e.Name, $e.Port)
-    Note 'loading the model takes 10-15 seconds'
+    if ($Preload) {
+        Note 'loading the model now - takes 10-15 seconds on a free card'
+    } else {
+        Note 'the console opens at once; load the model there, or it loads on first use'
+    }
 
     if ($Foreground) {
         & $e.Python @argv

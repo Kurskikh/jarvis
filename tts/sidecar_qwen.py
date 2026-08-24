@@ -14,8 +14,12 @@ refslice.py) so the two cannot drift.
     python sidecar_qwen.py --reference "xamples/jarvis_sample.wav"
 """
 import argparse
+import csv
+import io
 import json
 import os
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -156,6 +160,141 @@ def vram():
         # is the number that matters when something else wants the card.
         "ours_held_mb": mb(torch.cuda.memory_reserved()),
     }
+
+
+# ------------------------------------------------------- who holds the card
+
+# The address this is actually listening on, filled in by main().
+#
+# It matters because one endpoint below ends processes. On the loopback that is
+# a console for the person at the keyboard; on 0.0.0.0 it is the same console
+# for everyone on the network.
+BOUND_HOST = "127.0.0.1"
+LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+# Never offered for killing, whatever they are holding.
+#
+# dwm comes first by usage on every Windows machine, and it is the desktop
+# itself. Windows does restart most of these, but "restarts" means every window
+# on screen is torn down and rebuilt, which is not what a button should do by
+# surprise. The rest are the session and the kernel.
+PROTECTED = {
+    "dwm", "explorer", "csrss", "winlogon", "wininit", "services", "lsass",
+    "smss", "system", "registry", "idle", "system idle process",
+    "memory compression", "lsaiso", "fontdrvhost", "sihost",
+}
+
+# instance names look like  pid_10976_luid_0x00000000_0x0001CE17_phys_0
+_PID_IN_INSTANCE = re.compile(r"pid_(\d+)_", re.IGNORECASE)
+
+# no console window when this is launched from a windowless parent
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _dedicated_by_pid():
+    """
+    Bytes of dedicated GPU memory per process id, from Windows' own counters.
+
+    NOT from nvidia-smi. On Windows the display driver runs in WDDM mode, and
+    there the driver does not report per-process memory at all: every row of
+    --query-compute-apps=used_memory comes back "[N/A]", for all fifty-odd
+    processes that have touched the card. The performance counters do have the
+    figure, and they are the ones Task Manager draws.
+
+    Returns {} on anything that is not Windows, or if the counter is missing.
+    """
+    if os.name != "nt":
+        return {}
+
+    try:
+        done = subprocess.run(
+            ["typeperf", r"\GPU Process Memory(*)\Dedicated Usage", "-sc", "1"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=25, creationflags=_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+
+    rows = [r for r in csv.reader(io.StringIO(done.stdout)) if len(r) > 1]
+    if len(rows) < 2:
+        return {}
+
+    header, values = rows[0], rows[1]
+    out = {}
+    # column 0 of both is the timestamp
+    for name, value in zip(header[1:], values[1:]):
+        found = _PID_IN_INSTANCE.search(name)
+        if not found:
+            continue
+        try:
+            taken = float(value)
+        except ValueError:
+            continue
+        if taken <= 0:
+            continue
+        # A process can appear once per graphics adapter. Summing is right for
+        # the question being asked - how much is this program holding - even
+        # though it means the number spans adapters on a machine with two.
+        out[int(found.group(1))] = out.get(int(found.group(1)), 0) + taken
+
+    return out
+
+
+def gpu_processes():
+    """
+    Everything currently holding dedicated GPU memory, largest first.
+
+    These figures do not add up to the card's total, and are not meant to: dwm
+    holds the composition surfaces for every window on the desktop, so memory
+    an application allocated is counted once under that application and again
+    under dwm. The card's own total comes from the driver, in vram(), and the
+    two are shown side by side rather than reconciled.
+    """
+    import psutil
+
+    ours = os.getpid()
+    out = []
+
+    for pid, taken in _dedicated_by_pid().items():
+        name, cmd = "(процесс закрылся)", ""
+        try:
+            p = psutil.Process(pid)
+            name = p.name()
+            # the executable is enough to recognise something; the full command
+            # line of a python process is a wall of paths
+            cmd = (p.exe() or "")
+        except Exception:
+            pass
+
+        stem = name.lower().removesuffix(".exe")
+        if pid == ours:
+            why = "self"
+        elif stem in PROTECTED:
+            why = "protected"
+        else:
+            why = None
+
+        out.append({
+            "pid": pid,
+            "name": name,
+            "path": cmd,
+            "mb": round(taken / 2**20),
+            "blocked": why,
+        })
+
+    out.sort(key=lambda r: r["mb"], reverse=True)
+    return out
+
+
+def may_kill(row):
+    """Why this process must not be ended, or None if it may be."""
+    if row["blocked"] == "self":
+        return ("Это сам сайдкар. Чтобы освободить память, выгрузите модель "
+                "кнопкой на вкладке синтеза.")
+    if row["blocked"] == "protected":
+        return ("{} — служебный процесс Windows. Его завершение обрушит "
+                "рабочий стол или систему.".format(row["name"]))
+    return None
 
 
 def transcribe(path):
@@ -610,6 +749,81 @@ def api_model(body: dict = Body(...)):
             "clones": known["clones"] if known else None, "vram": vram()}
 
 
+@app.get("/gpu")
+def gpu():
+    """The card, and who is holding it."""
+    rows = gpu_processes()
+    return {
+        "vram": vram(),
+        "processes": rows,
+        "can_kill": BOUND_HOST in LOOPBACK,
+        "supported": os.name == "nt",
+        "ours": os.getpid(),
+    }
+
+
+@app.post("/gpu/kill")
+def gpu_kill(payload: dict = Body(...)):
+    """
+    End one process that is holding the card.
+
+    Deliberately narrow. It refuses anything not currently in the GPU list, so
+    it cannot be used as a general process killer, and it refuses everything
+    when this server is not on the loopback - a console that ends processes is
+    for the person at this keyboard, not for the network.
+    """
+    import psutil
+
+    if BOUND_HOST not in LOOPBACK:
+        return JSONResponse(
+            {"error": "Сайдкар слушает {}, а не петлю. Завершение процессов "
+                      "отсюда выключено.".format(BOUND_HOST)},
+            status_code=403,
+        )
+
+    try:
+        pid = int(payload.get("pid"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "нужен pid"}, status_code=400)
+
+    rows = {r["pid"]: r for r in gpu_processes()}
+    row = rows.get(pid)
+    if row is None:
+        return JSONResponse(
+            {"error": "Процесс {} не держит видеопамять. Завершать можно "
+                      "только то, что есть в этом списке.".format(pid)},
+            status_code=404,
+        )
+
+    refusal = may_kill(row)
+    if refusal:
+        return JSONResponse({"error": refusal}, status_code=403)
+
+    try:
+        p = psutil.Process(pid)
+        p.terminate()
+        try:
+            p.wait(timeout=4)
+        except psutil.TimeoutExpired:
+            # asked politely, twice
+            p.kill()
+            p.wait(timeout=4)
+    except psutil.NoSuchProcess:
+        pass
+    except psutil.AccessDenied:
+        return JSONResponse(
+            {"error": "Нет прав завершить {} (pid {}). Он запущен от другого "
+                      "пользователя или от администратора.".format(row["name"], pid)},
+            status_code=403,
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    print("[gpu] ended {} (pid {}), it held {} MB".format(row["name"], pid, row["mb"]),
+          flush=True)
+    return {"ended": row["name"], "pid": pid, "freed_mb": row["mb"]}
+
+
 @app.post("/unload")
 def api_unload():
     """Hand the video memory back. The next /speak loads the model again."""
@@ -659,9 +873,41 @@ button:disabled{opacity:.45;cursor:default}
 .item .txt{flex:1;min-width:190px}
 audio{height:34px}
 code{background:#0d1117;padding:1px 5px;border-radius:3px;font-size:12.5px}
+.tabs{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--line)}
+.tab{background:transparent;color:var(--soft);border:0;border-bottom:2px solid transparent;
+  border-radius:0;padding:8px 14px;font:600 13.5px system-ui;cursor:pointer}
+.tab.on{color:var(--acc);border-bottom-color:var(--acc)}
+/* fixed layout, or the paths in the first column push the buttons out of
+   the card - they are long enough to do it on any real machine */
+table{width:100%;table-layout:fixed;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th{text-align:left;font:600 11.5px system-ui;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--soft);padding:0 9px 8px 0;border-bottom:1px solid var(--line);
+  cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{color:var(--ink)}
+th.num,td.num{text-align:right;padding-right:14px}
+th.act{cursor:default;text-align:right;padding-right:0}
+th.act:hover{color:var(--soft)}
+td{padding:9px 9px 9px 0;border-bottom:1px solid var(--line);font-size:13.5px;
+  vertical-align:middle;overflow:hidden}
+td.act{text-align:right;padding-right:0;white-space:nowrap}
+.pname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+tr.blocked td{color:var(--soft)}
+tr.mine td{color:var(--acc)}
+button.small{padding:5px 11px;font-size:12.5px}
+button.danger{background:transparent;color:var(--warn);border:1px solid var(--line)}
+button.danger:hover{border-color:var(--warn)}
+.why{font-size:12px;color:var(--soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.arrow{color:var(--acc);font-size:10px}
 </style></head><body><div class="wrap">
 <h1>Jarvis TTS</h1>
 <div class="sub" id="banner">Qwen3-TTS. Модель держится загруженной, одна генерация за раз.</div>
+
+<div class="tabs">
+  <button class="tab on" id="tab-tts" onclick="showTab('tts')">Синтез</button>
+  <button class="tab" id="tab-gpu" onclick="showTab('gpu')">Видеопамять</button>
+</div>
+
+<div id="pane-tts">
 
 <div class="card">
   <div class="bar" style="margin-top:0">
@@ -751,7 +997,36 @@ code{background:#0d1117;padding:1px 5px;border-radius:3px;font-size:12.5px}
 </div>
 
 <div class="card"><div id="list"></div></div>
-</div>
+</div><!-- /pane-tts -->
+
+<div id="pane-gpu" style="display:none">
+  <div class="card">
+    <div class="bar" style="margin-top:0">
+      <button class="ghost" onclick="gpuLoad()">Обновить</button>
+      <span id="gpucard" class="meta"></span>
+    </div>
+    <div class="meta" style="margin-top:9px">Цифры по процессам берутся из счётчиков Windows —
+      тех же, что показывает диспетчер задач. <b>Они не складываются в объём карты</b>: композитор
+      рабочего стола <code>dwm</code> держит поверхности за все окна сразу, поэтому одна и та же
+      память попадает и в его строку, и в строку приложения. Объём карты выше читается отдельно,
+      у драйвера.</div>
+  </div>
+
+  <div class="card">
+    <table>
+      <colgroup><col style="width:56%"><col style="width:11%">
+                <col style="width:17%"><col style="width:16%"></colgroup>
+      <thead><tr>
+        <th onclick="sortBy('name')">Процесс <span id="ar-name" class="arrow"></span></th>
+        <th class="num" onclick="sortBy('pid')">PID <span id="ar-pid" class="arrow"></span></th>
+        <th class="num" onclick="sortBy('mb')">Видеопамять <span id="ar-mb" class="arrow"></span></th>
+        <th class="act"></th>
+      </tr></thead>
+      <tbody id="gpurows"><tr><td colspan="4" class="meta">…</td></tr></tbody>
+    </table>
+    <div id="gpustatus" class="meta" style="margin-top:11px"></div>
+  </div>
+</div><!-- /pane-gpu -->
 <script>
 const $=id=>document.getElementById(id)
 async function refresh(){
@@ -760,7 +1035,8 @@ async function refresh(){
     const v=h.vram||{}
     $('vram').textContent=(h.ok?'в памяти':'выгружена')
       +(v.card_free_mb?(' · держим '+v.ours_held_mb+' МБ, на карте свободно '+v.card_free_mb+' из '+v.card_total_mb):'')
-    $('banner').textContent=h.model+' \u00b7 эталон '+h.slice.secs+'s \u00b7 '+(h.sample_rate||'?')+' Гц'
+    $('banner').textContent=(h.ok?'':'модель не в памяти \u00b7 ')
+      +h.model+' \u00b7 эталон '+h.slice.secs+'s \u00b7 '+(h.sample_rate||'?')+' Гц'
   }catch(e){ $('vram').textContent='сайдкар не отвечает' }
 }
 async function adm(path){
@@ -903,6 +1179,104 @@ function hearRef(){ $('refaudio').src='/reference/audio?'+Date.now() }
 loadModels()
 loadCfg()
 $('model_id').addEventListener('change', showModelNote)
+let gpuTimer=null
+// The rows as the server sent them. Kept so a click can name the process
+// without putting that name into an onclick attribute: a name containing
+// a quote would break the markup, and escaping one is not possible here -
+// this whole page is a Python string, and Python consumes the escape first.
+let GPU=[]
+function showTab(which){
+  const on = which==='gpu'
+  $('pane-tts').style.display = on ? 'none' : ''
+  $('pane-gpu').style.display = on ? '' : 'none'
+  $('tab-tts').className = on ? 'tab' : 'tab on'
+  $('tab-gpu').className = on ? 'tab on' : 'tab'
+  // Reading the counters costs a second of a Windows utility's time, so it
+  // happens while the tab is open and not otherwise.
+  clearInterval(gpuTimer); gpuTimer=null
+  if(on){ gpuLoad(); gpuTimer=setInterval(gpuLoad, 5000) }
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) }
+// Biggest first, because the question being asked is always "who is eating
+// the card". Clicking a heading again turns that column around.
+let SORTKEY='mb', SORTDIR=-1
+let CANKILL=true
+
+function sortBy(key){
+  if(SORTKEY===key){ SORTDIR = -SORTDIR }
+  else { SORTKEY = key; SORTDIR = (key==='name') ? 1 : -1 }
+  drawGpu()
+}
+
+function drawGpu(){
+  const k=SORTKEY, d=SORTDIR
+  GPU.sort((a,b) => {
+    if(k==='name'){
+      const x=String(a.name).toLowerCase(), y=String(b.name).toLowerCase()
+      return x<y ? -d : (x>y ? d : 0)
+    }
+    return (a[k]-b[k])*d
+  })
+
+  for(const c of ['name','pid','mb']){
+    $('ar-'+c).textContent = (c===k) ? (d>0 ? '▲' : '▼') : ''
+  }
+
+  // The index below is into GPU as it stands AFTER this sort, and gpuKill
+  // reads the same array - so re-sorting can never point a button at the
+  // wrong process.
+  $('gpurows').innerHTML = GPU.map((p, i) => {
+    const cls = p.blocked==='self' ? 'mine' : (p.blocked ? 'blocked' : '')
+    let act = '<button class="small danger" onclick="gpuKill(' + i + ')">Завершить</button>'
+    if(p.blocked==='self') act = '<span class="why">это сайдкар</span>'
+    else if(p.blocked)     act = '<span class="why">системный</span>'
+    else if(!CANKILL)      act = '<span class="why">не на петле</span>'
+    const full = esc(p.path || p.name)
+    return '<tr class="'+cls+'"><td title="'+full+'"><div class="pname">'+esc(p.name)+'</div>'
+      + (p.path ? '<div class="why">'+full+'</div>' : '')
+      + '</td><td class="num">'+p.pid+'</td>'
+    + '<td class="num">'+(p.mb ? p.mb+' МБ' : 'меньше МБ')+'</td>'
+      + '<td class="act">'+act+'</td></tr>'
+  }).join('')
+}
+
+async function gpuLoad(){
+  try{
+    const g = await (await fetch('/gpu')).json()
+    const v = g.vram||{}
+    CANKILL = g.can_kill
+    $('gpucard').textContent = v.card_total_mb
+      ? ('карта занята на '+v.card_used_mb+' МБ из '+v.card_total_mb+', свободно '+v.card_free_mb)
+      : 'карта не видна'
+    if(!g.supported){
+      $('gpurows').innerHTML='<tr><td colspan="4" class="meta">Счётчики видеопамяти '
+        +'по процессам есть только в Windows.</td></tr>'
+      return
+    }
+    if(!g.processes.length){
+      $('gpurows').innerHTML='<tr><td colspan="4" class="meta">Карту никто не держит.</td></tr>'
+      return
+    }
+    GPU = g.processes
+    drawGpu()
+  }catch(e){ $('gpucard').textContent='сайдкар не отвечает' }
+}
+async function gpuKill(i){
+  const p = GPU[i]
+  if(!p) return
+  const pid = p.pid, name = p.name
+  if(!confirm('Завершить ' + name + ' (pid ' + pid + ')? Несохранённое в нём будет потеряно.')) return
+  const st=$('gpustatus'); st.className='meta'; st.textContent='завершаю '+name+'...'
+  try{
+    const r = await fetch('/gpu/kill',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pid:pid})})
+    const j = await r.json()
+    if(!r.ok){ st.className='meta warn'; st.textContent = j.error || ('ошибка '+r.status) }
+    else{ st.className='meta'; st.textContent = j.ended+' завершён, держал '+j.freed_mb+' МБ' }
+  }catch(e){ st.className='meta warn'; st.textContent='не дозвониться до сайдкара' }
+  finally{ gpuLoad() }
+}
 refresh(); setInterval(refresh, 5000)
 </script></body></html>
 """
@@ -914,8 +1288,10 @@ def index():
 
 
 def main():
-    global CFG, _slice_path, _slice_secs, _prompt_text
+    global CFG, _slice_path, _slice_secs, _prompt_text, BOUND_HOST
     ap = argparse.ArgumentParser()
+    # Anything other than the loopback turns OFF process ending - see the note
+    # on BOUND_HOST. The rest of the console keeps working.
     ap.add_argument("--host", default="127.0.0.1")
     # a different port from the CosyVoice sidecar on purpose: both can run, and
     # switching engines is then one setting rather than a restart dance
@@ -925,6 +1301,16 @@ def main():
     # to take. A saved config beats this, so an existing install keeps
     # whatever was chosen in the console.
     ap.add_argument("--model-id", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+    # Start without the model in video memory.
+    #
+    # Default, and not a small thing: the model is about 5 GB, and taking it at
+    # startup means the sidecar competes for the card with whatever is already
+    # using it. Started while a game held the card, the load did not finish in
+    # three minutes and the launcher gave up on a process that was alive and
+    # merely thrashing. Nothing else needs it that early - the console answers,
+    # the video memory tab works, and the model arrives when it is asked for.
+    ap.add_argument("--preload", action="store_true",
+                    help="load the model at startup instead of on the first request")
     ap.add_argument("--language", default="Russian")
     ap.add_argument("--reference", default=str(HERE / "xamples" / "jarvis_sample.wav"))
     # the same slice the voice pack was baked from; changing it changes the voice
@@ -984,21 +1370,33 @@ def main():
     _prompt_text = a.prompt_text.strip() or transcribe(_slice_path)
     print(f"transcript: {_prompt_text}")
 
-    model()                  # warm before serving
+    if a.preload:
+        model()              # warm before serving
 
-    # ...and warm the path that will actually be used. The model's own
-    # warmup() does not touch voice cloning, so the first cloned request still
-    # cost 5.7 s against the 0.43 s every one after it - and the first request
-    # is precisely the one somebody is watching. One throwaway line here moves
-    # that cost off the first question.
-    try:
-        t0 = time.time()
-        for _ in synth_stream("Готово."):
-            pass
-        print(f"cloning path warmed in {time.time()-t0:.1f}s", flush=True)
-    except Exception as e:
-        print(f"warm-up generation failed, first answer will be slow: {e}", flush=True)
+        # ...and warm the path that will actually be used. The model's own
+        # warmup() does not touch voice cloning, so the first cloned request
+        # still cost 5.7 s against the 0.43 s every one after it - and the
+        # first request is precisely the one somebody is watching. One
+        # throwaway line here moves that cost off the first question.
+        try:
+            t0 = time.time()
+            for _ in synth_stream("Готово."):
+                pass
+            print(f"cloning path warmed in {time.time()-t0:.1f}s", flush=True)
+        except Exception as e:
+            print(f"warm-up generation failed, first answer will be slow: {e}",
+                  flush=True)
+    else:
+        print("model not loaded - press «Загрузить в память» in the console, "
+              "or just ask for speech and it will load itself", flush=True)
+
     print(f"http://{a.host}:{a.port}", flush=True)
+
+    # what the kill endpoint checks before it will do anything
+    BOUND_HOST = a.host
+    if a.host not in LOOPBACK:
+        print("[gpu] listening on {} - ending processes from the console is "
+              "off".format(a.host), flush=True)
 
     import uvicorn
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning")

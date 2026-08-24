@@ -71,9 +71,17 @@ needs into `tts/hf` and `tts/models` and every run after that is offline.
 .\tts.ps1
 ```
 
-That starts the sidecar, fetches the voice model if it is not there yet,
-generates one throwaway line to warm it up, and opens the console. Put your
-reference recording in `xamples/` first, or it has no voice to clone.
+That starts the sidecar and opens the console. It comes up in a second or
+two, because it does **not** take the model into video memory on the way: press
+"Загрузить в память" in the console when you want it, or just ask for speech and
+it loads itself. The first load fetches the weights if they are not there yet.
+
+That is the default because the model is about 5 GB. Started while something
+else held the card, the load did not finish inside three minutes and the
+launcher gave up on a process that was alive and merely thrashing. Pass
+`-Preload` for the old behaviour.
+
+Put your reference recording in `xamples/` first, or it has no voice to clone.
 
 ## Running it
 
@@ -84,20 +92,37 @@ reference recording in `xamples/` first, or it has no voice to clone.
 .\tts.ps1 -Reload         # load it again
 .\tts.ps1 -Stop           # stop the process
 .\tts.ps1 -Engine cosy    # the CosyVoice sidecar instead
+.\tts.ps1 -Preload        # load the model at startup, the way it used to be
 .\tts.ps1 -Foreground     # keep it attached to this console
 .\tts.ps1 -ResetConfig    # forget the saved settings and start from defaults
 ```
 
-It listens on `127.0.0.1:8772`. Loopback only, and there is no setting to widen
-that: the whole point is that speech is synthesised on this machine.
+It listens on `127.0.0.1:8772`. Jarvis itself will talk to nothing else - the
+whole point is that speech is synthesised on this machine - and while `--host`
+exists, moving off the loopback switches `/gpu/kill` off: a console that ends
+processes is for the person at this keyboard, not for the network.
+
+The per-process figures on the Видеопамять tab come from Windows' own
+performance counters, the ones Task Manager draws, because `nvidia-smi` reports
+no per-process memory at all under the WDDM driver - every row comes back
+`[N/A]`. They do not add up to the card's total and are not meant to: `dwm`
+holds the composition surfaces for every window on the desktop, so the same
+memory is counted under `dwm` and again under the application that drew it. The
+card's own total is read separately, from the driver.
+
+`dwm`, `explorer`, `csrss` and the rest of the session cannot be ended from
+there, whatever they are holding, and neither can the sidecar itself - to free
+what IT holds, unload the model.
 
 | route | what it does |
 |---|---|
-| `/` | the console: try a line, change sampling, switch model or reference |
+| `/` | the console, in two tabs: **Синтез** to try a line, change sampling, switch model or reference, and **Видеопамять** to see what is holding the card |
 | `/speak` | synthesise. Length-prefixed frames, streamed |
 | `/health` | up, which model, sample rate, which reference |
 | `/models` | what can be loaded, and what each one is good for |
 | `/model` | load a different one |
+| `/gpu` | the card, and every process holding video memory |
+| `/gpu/kill` | end one of them |
 | `/config` | the saved settings, read and write |
 | `/reference` | the reference sample and how it is sliced |
 | `/unload`, `/reload` | free the VRAM, take it back |
