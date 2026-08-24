@@ -557,6 +557,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e93abca9e28e0a1b9877922aacb20576e05d4679ffa78c3d6dc22a26a216659"
 
 [[package]]
+name = "bzip2"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdb116a6ef3f6c3698828873ad02c3014b3c85cadb88496095628e3ef1e347f8"
+dependencies = [
+ "bzip2-sys",
+ "libc",
+]
+
+[[package]]
+name = "bzip2-sys"
+version = "0.1.13+1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "225bff33b2141874fe80d71e07d6eec4f85c5c216453dd96388240f96e1acc14"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
+
+[[package]]
 name = "cairo-rs"
 version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1843,6 +1863,16 @@ checksum = "38e2275cc4e4fc009b0669731a1e5ab7ebf11f469eaede2bab9309a5b4d6057f"
 dependencies = [
  "memoffset",
  "rustc_version",
+]
+
+[[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
@@ -3321,6 +3351,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sherpa-onnx",
  "sys-locale",
  "tempfile",
  "tokenizers",
@@ -4806,7 +4837,7 @@ dependencies = [
  "ort-sys",
  "smallvec",
  "tracing",
- "ureq",
+ "ureq 3.2.0",
 ]
 
 [[package]]
@@ -4817,7 +4848,7 @@ checksum = "06503bb33f294c5f1ba484011e053bfa6ae227074bdb841e9863492dc5960d4b"
 dependencies = [
  "hmac-sha256",
  "lzma-rust2",
- "ureq",
+ "ureq 3.2.0",
 ]
 
 [[package]]
@@ -6003,7 +6034,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c665f33d38cea657d9614f766881e4d510e0eda4239891eea56b4cadcf01801b"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -6524,6 +6557,28 @@ dependencies = [
  "libc",
  "sigchld",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "sherpa-onnx"
+version = "1.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93440301c4240bd5d83496ab9adeee889be48d9428f9c01c37e5ae4ef33ba9e2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sherpa-onnx-sys",
+]
+
+[[package]]
+name = "sherpa-onnx-sys"
+version = "1.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d627abc4624c845e628ad87cca4ff9ac265fc643021d155f2721ac589eeb324"
+dependencies = [
+ "bzip2",
+ "tar",
+ "ureq 2.12.1",
 ]
 
 [[package]]
@@ -7179,6 +7234,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
 ]
 
 [[package]]
@@ -8157,6 +8223,22 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "ureq"
+version = "2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "log",
+ "once_cell",
+ "rustls",
+ "rustls-pki-types",
+ "url",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "ureq"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdc97a28575b85cfedf2a7e7d3cc64b3e11bd8ac766666318003abbacc7a21fc"
@@ -8597,6 +8679,24 @@ name = "webpki-root-certs"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36a29fc0408b113f68cf32637857ab740edfafdf460c326cd2afaa2d84cc05dc"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -9359,6 +9459,16 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix 1.1.3",
+]
 
 [[package]]
 name = "xcursor"

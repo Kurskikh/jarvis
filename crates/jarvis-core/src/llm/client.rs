@@ -8,7 +8,7 @@ use crate::db::structs::is_loopback_url;
 use crate::DB;
 
 use super::error::LlmError;
-use super::wire::{ChatMessage, ChatRequest, ChatResponse, ErrorEnvelope};
+use super::wire::{ChatMessage, ChatRequest, ChatResponse, ChatTemplateKwargs, ErrorEnvelope};
 
 // not settings. a later stage can promote them; stage 1 keeps the surface small
 const TEMPERATURE: f32 = 0.7;
@@ -75,6 +75,8 @@ pub struct LlmConfig {
     pub system_prompt: String,
     pub timeout_secs: u64,
     pub max_tokens: u32,
+    // was the answer to "should this model think?" a no?
+    pub no_think: bool,
 }
 
 // One question and the answer it got, as the model will be shown it next time.
@@ -143,11 +145,16 @@ impl LlmConfig {
         let timeout_secs = timeout_secs.clamp(config::LLM_TIMEOUT_MIN, config::LLM_TIMEOUT_MAX);
         let max_tokens = max_tokens.clamp(config::LLM_MAX_TOKENS_MIN, config::LLM_MAX_TOKENS_MAX);
 
-        // there is no request field for this - LM Studio's documented parameter
-        // list has no reasoning switch - so the lever is the chat template's own
-        // convention, read from the system prompt. Qwen3 honours it; a model
-        // that does not simply reads one short line and ignores it.
-        let system_prompt = if thinking == "off" {
+        // Two levers, because neither works everywhere.
+        //
+        // The prompt convention below is what Qwen3 honours. Qwen3.5 does not:
+        // measured against qwen/qwen3.5-9b with this directive in place, the
+        // model spent 406 tokens reasoning and returned an empty answer. What
+        // reaches THAT model is chat_template_kwargs on the request, set where
+        // the body is built. Both go out; a model that understands neither
+        // reads one short line and ignores it.
+        let no_think = thinking == "off";
+        let system_prompt = if no_think {
             let base = system_prompt.trim();
             if base.is_empty() {
                 config::LLM_NO_THINK_DIRECTIVE.to_string()
@@ -176,7 +183,7 @@ impl LlmConfig {
         };
 
         Ok(LlmConfig { base_url, model, token: token.trim().to_string(),
-                       system_prompt, timeout_secs, max_tokens })
+                       system_prompt, timeout_secs, max_tokens, no_think })
     }
 }
 
@@ -227,6 +234,10 @@ async fn send(
         stream: false,
         temperature: TEMPERATURE,
         max_tokens: cfg.max_tokens,
+        // only when asked for - see the note on the field
+        chat_template_kwargs: cfg
+            .no_think
+            .then_some(ChatTemplateKwargs { enable_thinking: false }),
     };
 
     let mut req = client.post(&url).json(&body);

@@ -13,6 +13,24 @@ pub struct ChatRequest<'a> {
     // NOT max_completion_tokens - LM Studio takes max_tokens and ollama's
     // compat layer maps it to num_predict; the newer name is not honoured there
     pub max_tokens: u32,
+
+    // How a reasoning model is actually told not to reason.
+    //
+    // The prompt convention - "/no_think" in the system message - is a Qwen3
+    // habit that Qwen3.5 does not keep: measured, the model produced 406
+    // reasoning tokens and an empty answer with that directive in place. The
+    // switch that works goes in the request, where llama.cpp, LM Studio and
+    // vLLM all hand it to the chat template.
+    //
+    // Omitted entirely unless thinking is being turned off, so a server that
+    // has never heard of the field only meets it when someone asks for that.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_template_kwargs: Option<ChatTemplateKwargs>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct ChatTemplateKwargs {
+    pub enable_thinking: bool,
 }
 
 #[derive(Serialize, Debug)]

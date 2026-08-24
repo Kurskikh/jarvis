@@ -57,6 +57,7 @@ winrt-notification = { workspace = true, optional = true }
 # not optional - the "ahk" command type is not feature gated
 windows-registry = { workspace = true }
 windows = { workspace = true }
+sherpa-onnx = { workspace = true, optional = true }
 
 [features]
 default = ["jarvis_app"]
@@ -74,3 +75,7 @@ lua_only = ["lua", "tokio"]
 # and would not otherwise have it. this manifest uses no `dep:` syntax, so the
 # optional deps still create implicit features and naming them here is enough.
 llm = ["reqwest", "tokio"]
+# streaming recognition through sherpa-onnx. Optional because its build script
+# downloads a prebuilt library, and a build that does not need it should not
+# have to reach the network for one.
+sherpa = ["sherpa-onnx"]
