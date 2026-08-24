@@ -239,6 +239,25 @@ pub const TONE_THREADS: i32 = 4;
 // A spoken command that has run this long without a pause is not a command.
 pub const TONE_MAX_UTTERANCE_SECS: f32 = 20.0;
 
+// How far behind a wake-word hit the recogniser's audio has to start. It must
+// cover the whole name plus the detector's own lag - the detector reaches its
+// verdict near the END of the name - or the first transcript holds a fragment
+// the wake-phrase list cannot match.
+pub const WAKE_NAME_COVER_SECS: f32 = 1.5;
+
+// The most audio the recogniser is ever primed with at activation. The primer
+// is normally bounded by the current voice episode - speech since the VAD last
+// opened - so this cap only bites when someone talks straight through into the
+// name. Long enough for a whole sentence that ends in the name; short enough
+// that a monologue does not arrive labelled as a command.
+pub const WAKE_ASR_PRIMER_MAX_SECS: f32 = 4.0;
+
+// How long the priming decode may hold the audio thread. The microphone
+// driver buffers about 1.6 seconds; a decode that runs longer starts losing
+// the very command being spoken. T-one never comes near this; Vosk decodes at
+// its own pace and must be stopped rather than trusted.
+pub const WAKE_PRIMER_BUDGET_MS: u64 = 800;
+
 // gain normalizer settings
 pub const GAIN_TARGET_RMS: f32 = 3000.0;  // target RMS level
 pub const GAIN_MIN: f32 = 0.5;  // minimum gain multiplier

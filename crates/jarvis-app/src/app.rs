@@ -59,6 +59,22 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
     // ring buffer: keeps last 5 seconds of audio (pre-roll)
     let mut audio_buffer = AudioRingBuffer::new(5.0, frame_length, sample_rate);
 
+    // The recogniser's own pre-roll, pushed on every frame and read only when
+    // the wake word fires. This is what replaced the dual-feed: the command
+    // recogniser used to decode every voice-shaped sound in the room all day
+    // in case a name turned up in it - measured at 924 openings of the voice
+    // tract against 236 activations over one log. Now it hears nothing until
+    // the detector has spoken, and is then primed from this tail.
+    let mut asr_tail =
+        AudioRingBuffer::new(config::WAKE_ASR_PRIMER_MAX_SECS, frame_length, sample_rate);
+    let name_cover_frames =
+        ((config::WAKE_NAME_COVER_SECS * sample_rate as f32) / frame_length as f32) as usize;
+
+    // Frames since the VAD last opened. The primer is cut to the current voice
+    // episode: what was said before the last stretch of silence is a room
+    // talking to itself, not part of the command.
+    let mut frames_in_voice: usize = 0;
+
     // VAD state
     let mut vad_state = VadState::WaitingForVoice;
     let mut silence_frames: u32 = 0;
@@ -103,94 +119,77 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
         }
         let processed = audio_processing::process(&frame_buffer);
 
+        // kept in every VAD state: the wake word can fire off the live frames
+        // or out of the pre-roll, and either way this tail is the audio the
+        // recogniser is primed with at activation
+        asr_tail.push(&frame_buffer);
+
         match vad_state {
             VadState::WaitingForVoice => {
                 // always buffer audio
                 audio_buffer.push(&frame_buffer);
 
                 if processed.is_voice {
-                    // voice started! flush buffer to Vosk
+                    // voice started! give the wake detector the audio it missed
                     info!("VAD: Voice started, flushing {} buffered frames", audio_buffer.len());
 
-                    for buffered_frame in audio_buffer.drain_all() {
-                        listener::data_callback(&buffered_frame);
+                    let backlog = audio_buffer.drain_all();
+                    let hit = flush_preroll(&backlog, |frame| {
+                        listener::data_callback(frame).is_some()
+                    });
+
+                    if let Some(hit) = hit {
+                        // The name was already inside the pre-roll: said too
+                        // quietly for the VAD, which only woke on something
+                        // louder afterwards. This detection used to be dropped
+                        // on the floor right here, and the person had to say
+                        // the name again.
+                        //
+                        // The recogniser is primed from the backlog rather than
+                        // from asr_tail: the tail ends at the CURRENT frame,
+                        // and a name that sat deep in the pre-roll may have
+                        // scrolled out of it, while the backlog still holds
+                        // both the name and everything said after it.
+                        let share = asr_share_of_preroll(hit, name_cover_frames, backlog.len());
+                        run_activation(&mut frame_buffer, rt, frame_length, sample_rate,
+                                       &backlog[share]);
+
+                        silence_frames = 0;
+                        frames_in_voice = 0;
+                        reset_after_turn(&mut audio_buffer, &mut asr_tail);
+                        continue 'wake_word;
                     }
 
                     vad_state = VadState::VoiceActive;
                     silence_frames = 0;
+                    frames_in_voice = 0;
                 }
             }
 
             VadState::VoiceActive => {
-                // dual-feed: speech recognizer gets frames in parallel with wake word detector
-                let _ = stt::recognize(&frame_buffer, false);
+                frames_in_voice += 1;
 
                 // feed to wake word detector
-                if let Some(_keyword_index) = listener::data_callback(&frame_buffer) {
-                    // WAKE WORD DETECTED!
-                    info!("Wake word activated!");
-                    duck_others();
-                    ipc::send(IpcEvent::WakeWordDetected);
-                    // Answer NOW.
-                    //
-                    // This used to wait until the first transcript came back
-                    // and was judged, which is a recogniser's schedule, not a
-                    // conversation's: measured at 5.7 seconds between the
-                    // detector firing and "да, сэр" being heard. The person
-                    // sees the window react, hears nothing, and says the name
-                    // again.
-                    voices::play_reply();
+                //
+                // ONLY the detector. The command recogniser used to be fed the
+                // same frames here in parallel, which meant transcribing every
+                // conversation in the room on the chance it began with the
+                // name. It now stays silent until the detector has spoken and
+                // is primed from asr_tail instead - same audio, none of the
+                // all-day decoding.
+                if listener::data_callback(&frame_buffer).is_some() {
+                    // the primer reaches back over this voice episode plus a
+                    // lead for the VAD opening late - the lead is silence by
+                    // the VAD's own judgement, so overshooting costs nothing
+                    let tail = asr_tail.drain_all();
+                    let take = primer_take(frames_in_voice, name_cover_frames, tail.len());
+                    run_activation(&mut frame_buffer, rt, frame_length, sample_rate,
+                                   &tail[tail.len() - take..]);
 
-                    stt::reset_wake_recognizer();
-                    audio_processing::reset();
-
-                    // brief sniff to keep feeding STT while transitioning
-                    //
-                    // The command recogniser still holds the wake word's own
-                    // audio, and it finalises that on its own schedule -
-                    // measured at 33 ms after activation on one utterance and
-                    // 604 ms on the next. Either side of this window, that
-                    // first finalised segment is the wake word rather than a
-                    // command, and read_segment has to be told which segment
-                    // that is.
-                    //
-                    // A result landing HERE is that segment, and it goes
-                    // nowhere: this loop has no way to act on it. So record
-                    // that it has been used up. Without this the rule would
-                    // aim one segment too late and throw away the real command
-                    // - which is precisely what a fast "джарвис" followed by a
-                    // question would hit.
-                    let sniff_frames = ((0.3 * sample_rate as f32) / frame_length as f32) as u32;
-                    let mut wake_segment_pending = true;
-                    for _ in 0..sniff_frames {
-                        recorder::read_microphone(&mut frame_buffer);
-                        audio_processing::process(&frame_buffer);
-                        if stt::recognize(&frame_buffer, false).is_some() {
-                            wake_segment_pending = false;
-                        }
-                    }
-                    if !wake_segment_pending {
-                        debug!("The wake word's own audio finalised during the sniff window");
-                    }
-
-                    ipc::send(IpcEvent::Listening);
-                    recognize_command(&mut frame_buffer, &rt, frame_length, sample_rate,
-                                      true, wake_segment_pending);
-
-                    // The turn is over here, answer and all: recognize_command
-                    // holds its window open while llm_busy() is true, which
-                    // covers the model thinking and the answer being spoken.
-                    unduck_others();
-
-                    // reset state after command
                     vad_state = VadState::WaitingForVoice;
                     silence_frames = 0;
-                    audio_buffer.clear();
-                    stt::reset_wake_recognizer();
-                    stt::reset_speech_recognizer(); // NOW reset, after command is done
-                    audio_processing::reset();
-                    ipc::send(IpcEvent::Idle);
-
+                    frames_in_voice = 0;
+                    reset_after_turn(&mut audio_buffer, &mut asr_tail);
                     continue 'wake_word;
                 }
 
@@ -204,8 +203,9 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
                         debug!("VAD: Silence timeout, returning to wait state");
                         vad_state = VadState::WaitingForVoice;
                         silence_frames = 0;
+                        // only the wake recogniser was listening; the command
+                        // recogniser has heard nothing to throw away
                         stt::reset_wake_recognizer();
-                        stt::reset_speech_recognizer(); // reset since we were dual-feeding
                     }
                 }
             }
@@ -216,6 +216,129 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
     ipc::send(IpcEvent::Stopping);
 
     Ok(())
+}
+
+// Push the buffered pre-roll through the wake detector, stopping at the first
+// hit and saying which frame it landed on.
+//
+// The detector's answer used to be thrown away here, which is how a name the
+// energy VAD slept through went unanswered: the detection fired mid-flush,
+// nobody looked, and the person said "джарвис" again - one log counted 11 of
+// 55 detections landing in this window.
+fn flush_preroll(frames: &[Vec<i16>], mut detect: impl FnMut(&[i16]) -> bool) -> Option<usize> {
+    frames.iter().position(|frame| detect(frame))
+}
+
+// Which slice of the pre-roll the recogniser should hear once the detector
+// has fired on frame `hit`: up to `cover` frames back from the hit - enough to
+// hold the name itself, since the detector fires near its end - and everything
+// after it, which in run-on speech is the command.
+fn asr_share_of_preroll(hit: usize, cover: usize, total: usize) -> std::ops::Range<usize> {
+    (hit + 1).saturating_sub(cover)..total
+}
+
+// How many of the tail's frames the live-path primer takes: the current voice
+// episode plus a lead for the VAD opening late, bounded by what the tail
+// holds. Bounding by the episode is what keeps a monologue said BEFORE the
+// name out of the transcript - the tail itself reaches several seconds back.
+fn primer_take(frames_in_voice: usize, lead: usize, available: usize) -> usize {
+    (frames_in_voice + lead).min(available)
+}
+
+// Hand a fresh recogniser stream the audio from just before the activation,
+// so its first transcript holds the name and whatever was said in the same
+// breath - which is what lets read_segment tell that transcript apart from a
+// command.
+//
+// Returns the LAST transcript that finalised during the feed, if any. The old
+// 0.3-second sniff could only ever swallow the wake word's own echo; this
+// primer can span seconds, and a pause inside it finalises whatever was said
+// before the pause - in the quiet-name case that IS the command, and throwing
+// the text away would answer "да, сэр" and then sit silent. The caller hands
+// it to recognize_command to be read like any other segment. When several
+// finalise, the earlier ones are fragments the tail dragged in ahead of the
+// name; the last is the one that ends nearest the activation.
+//
+// The deadline is not decoration. The microphone driver buffers about 1.6
+// seconds and nobody reads it while this runs: T-one decodes twenty times
+// faster than real time and never comes close, but Vosk goes at its own pace,
+// and a decode that overstays would cost the very command being spoken now.
+fn prime_asr(frames: &[Vec<i16>]) -> Option<(String, f32)> {
+    stt::reset_speech_recognizer();
+
+    let deadline = Instant::now() + Duration::from_millis(config::WAKE_PRIMER_BUDGET_MS);
+    let mut last = None;
+    for (fed, frame) in frames.iter().enumerate() {
+        if Instant::now() > deadline {
+            debug!("Priming ran out of budget; {} of {} frames left unheard",
+                   frames.len() - fed, frames.len());
+            break;
+        }
+        if let Some(segment) = stt::recognize_command(frame) {
+            last = Some(segment);
+        }
+    }
+    last
+}
+
+// Everything a finished turn leaves behind, cleared in one place. Two
+// activation paths return here, and a reset that lands in only one of them is
+// how the paths drift apart.
+//
+// The command recogniser is deliberately NOT on this list: nothing feeds it
+// between turns any more, and prime_asr opens the next turn with its own
+// reset.
+fn reset_after_turn(audio_buffer: &mut AudioRingBuffer, asr_tail: &mut AudioRingBuffer) {
+    audio_buffer.clear();
+    asr_tail.clear();
+    stt::reset_wake_recognizer();
+    audio_processing::reset();
+    ipc::send(IpcEvent::Idle);
+}
+
+// The name has been heard: acknowledge, take the command, see the turn out.
+//
+// One function because there are two places the name can land - in the live
+// frames, or inside the pre-roll flushed when the VAD finally opened - and
+// both must lead to exactly the same turn. `primer` is the audio the detector
+// matched, on its way to the command recogniser.
+fn run_activation(
+    frame_buffer: &mut [i16],
+    rt: &tokio::runtime::Runtime,
+    frame_length: usize,
+    sample_rate: usize,
+    primer: &[Vec<i16>],
+) {
+    info!("Wake word activated!");
+    duck_others();
+    ipc::send(IpcEvent::WakeWordDetected);
+    // Answer NOW.
+    //
+    // This used to wait until the first transcript came back
+    // and was judged, which is a recogniser's schedule, not a
+    // conversation's: measured at 5.7 seconds between the
+    // detector firing and "да, сэр" being heard. The person
+    // sees the window react, hears nothing, and says the name
+    // again.
+    voices::play_reply();
+
+    stt::reset_wake_recognizer();
+    audio_processing::reset();
+
+    // after play_reply, not before: the priming decode costs tens of
+    // milliseconds and the acknowledgement must not wait on it
+    let primed = prime_asr(primer);
+    if let Some((text, _)) = &primed {
+        debug!("A segment finalised while priming: '{}'. It opens the turn.", text);
+    }
+
+    ipc::send(IpcEvent::Listening);
+    recognize_command(frame_buffer, rt, frame_length, sample_rate, true, primed);
+
+    // The turn is over here, answer and all: recognize_command
+    // holds its window open while llm_busy() is true, which
+    // covers the model thinking and the answer being spoken.
+    unduck_others();
 }
 
 
@@ -385,11 +508,10 @@ fn recognize_command(
     frame_length: usize,
     sample_rate: usize,
     prefed_audio: bool,
-    // Is the wake word's own audio still waiting to come out of the recogniser?
-    // Separate from prefed_audio: that one says where this listening window
-    // starts, this one says whether the first segment out of it belongs to the
-    // wake word or to the person.
-    wake_segment_pending: bool,
+    // A transcript the priming decode already finalised. It is the person's
+    // words read early, not the microphone's future: it is handled as the
+    // turn's first segment, before anything the microphone says next.
+    mut primed: Option<(String, f32)>,
 ) {
     let mut audio_buffer = AudioRingBuffer::new(2.0, frame_length, sample_rate);
     let mut vad_state = if prefed_audio {
@@ -399,7 +521,9 @@ fn recognize_command(
     };
     let mut silence_frames: u32 = 0;
     let mut start = SystemTime::now();
-    let mut first_recognition = wake_segment_pending;
+    // the first segment of a turn is special whichever door it comes in by:
+    // it is the one that may be the wake word's own audio
+    let mut first_recognition = true;
 
     // how long this listening window lasts. It shortens to the follow-up
     // setting once a turn has been answered: waiting the full command timeout
@@ -476,9 +600,10 @@ fn recognize_command(
             }
 
             VadState::VoiceActive => {
-                // feed to STT
+                // feed to STT - unless priming already finished a segment, in
+                // which case that segment goes first
                 if let Some((mut recognized_voice, confidence)) =
-                    stt::recognize_command(frame_buffer)
+                    primed.take().or_else(|| stt::recognize_command(frame_buffer))
                 {
                     // the score is reported, not enforced. Vosk's confidence is
                     // a summed log-likelihood: it grows with the length of the
@@ -1286,6 +1411,75 @@ pub fn close(code: i32) {
     jarvis_core::ducking::restore_blocking();
     std::process::exit(code);
 }
+#[cfg(test)]
+mod flush_preroll_tests {
+    use super::{asr_share_of_preroll, flush_preroll, primer_take};
+
+    fn frames(n: usize) -> Vec<Vec<i16>> {
+        // each frame carries its own index, so the assertions can say WHICH
+        // frames the detector was given
+        (0..n).map(|i| vec![i as i16; 4]).collect()
+    }
+
+    // The bug this pins: the flush loop called the detector and threw its
+    // answer away, so a name that was already inside the pre-roll never
+    // activated anything - 11 of the 55 detections in one real log.
+    #[test]
+    fn a_detection_during_the_flush_is_not_thrown_away() {
+        let hit = flush_preroll(&frames(5), |f| f[0] == 2);
+        assert_eq!(hit, Some(2),
+                   "the detector fired inside the pre-roll and the flush must say where");
+    }
+
+    #[test]
+    fn the_detector_is_not_fed_past_its_own_hit() {
+        let mut saw = Vec::new();
+        flush_preroll(&frames(5), |f| {
+            saw.push(f[0]);
+            f[0] == 2
+        });
+        assert_eq!(saw, vec![0, 1, 2], "after the hit the detector's work is done");
+    }
+
+    #[test]
+    fn no_detection_means_the_whole_buffer_was_searched() {
+        let mut seen = 0;
+        let hit = flush_preroll(&frames(5), |_| {
+            seen += 1;
+            false
+        });
+        assert_eq!(hit, None);
+        assert_eq!(seen, 5);
+    }
+
+    // The recogniser's share of the pre-roll starts far enough before the hit
+    // to contain the name - the detector fires at its END - and runs to the
+    // end of the buffer, where the command follows in run-on speech.
+    #[test]
+    fn the_recogniser_hears_the_name_and_what_follows_it() {
+        assert_eq!(asr_share_of_preroll(10, 4, 20), 7..20);
+    }
+
+    #[test]
+    fn a_hit_at_the_very_start_cannot_reach_before_the_buffer() {
+        assert_eq!(asr_share_of_preroll(1, 4, 20), 0..20);
+    }
+
+    // The live-path primer covers the voice episode plus the lead, so a
+    // sentence that ENDS in the name arrives whole...
+    #[test]
+    fn the_primer_spans_the_voice_episode_and_the_lead() {
+        assert_eq!(primer_take(10, 46, 120), 56);
+    }
+
+    // ...but never more than the tail holds: a monologue that ran longer than
+    // the tail is cut, not chased.
+    #[test]
+    fn the_primer_never_exceeds_what_the_tail_holds() {
+        assert_eq!(primer_take(200, 46, 120), 120);
+    }
+}
+
 #[cfg(test)]
 mod length_floor_tests {
     use super::MIN_COMMAND_CHARS;
