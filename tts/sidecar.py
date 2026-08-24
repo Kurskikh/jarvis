@@ -19,7 +19,7 @@ Two things it does that a naive wrapper would not:
     "Думаю над ответом, сэр" in a subtly different one. Same file, same slice,
     same code (refslice.py), computed once at startup.
 
-    python sidecar.py --reference "I:/jarvis-tts/xamples/jarvis_sample.wav"
+    python sidecar.py --reference "xamples/jarvis_sample.wav"
 """
 import argparse
 import io

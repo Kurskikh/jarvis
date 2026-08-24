@@ -186,7 +186,21 @@ foreach ($key in $wanted) {
         exit $LASTEXITCODE
     }
 
-    Start-Process -FilePath $e.Python -ArgumentList $argv -WorkingDirectory $root
+    # Hidden, with its output on disk.
+    #
+    # Start-Process opens a console window unless told not to, and that window
+    # then sits on the desktop for the life of the sidecar showing its startup
+    # chatter - including a SoX banner from a tokenizer this model does not
+    # use. The process was always detached correctly; the window was noise.
+    #
+    # But a hidden process with nowhere to write is a process you cannot
+    # diagnose, so both streams go to files beside this script. Two files,
+    # because Start-Process refuses to point stdout and stderr at one.
+    $outLog = Join-Path $root ("sidecar-{0}.out.log" -f $key)
+    $errLog = Join-Path $root ("sidecar-{0}.err.log" -f $key)
+    Start-Process -FilePath $e.Python -ArgumentList $argv -WorkingDirectory $root `
+                  -WindowStyle Hidden `
+                  -RedirectStandardOutput $outLog -RedirectStandardError $errLog
 
     $deadline = (Get-Date).AddSeconds(180)
     $up = $false
@@ -195,7 +209,7 @@ foreach ($key in $wanted) {
         if ($null -ne (Get-Health $e.Port)) { $up = $true; break }
     }
     if (-not $up) {
-        Fail ("{0} did not answer within three minutes. Run with -Foreground to see why." -f $e.Name)
+        Fail ("{0} did not answer within three minutes. See {1}, or run with -Foreground." -f $e.Name, $outLog)
     }
     Write-Host ("   {0} ready on http://127.0.0.1:{1}" -f $e.Name, $e.Port) -ForegroundColor Green
 }

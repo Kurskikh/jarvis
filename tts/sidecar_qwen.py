@@ -11,7 +11,7 @@ Everything that is not synthesis - the wire format, the quality checks, the
 reference slicing - is shared with the CosyVoice sidecar (ttscommon.py,
 refslice.py) so the two cannot drift.
 
-    python sidecar_qwen.py --reference "I:/jarvis-tts/xamples/jarvis_sample.wav"
+    python sidecar_qwen.py --reference "xamples/jarvis_sample.wav"
 """
 import argparse
 import json

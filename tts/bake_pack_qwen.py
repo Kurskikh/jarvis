@@ -30,7 +30,10 @@ import soundfile as sf
 
 API = "http://127.0.0.1:8772"
 PACK = Path(r"I:\jarvis\resources\sound\voices\jarvis-og-tts")
-BACKUP = Path(r"I:\jarvis-tts\pack-previous")
+# beside this script, wherever it happens to live. It used to name the
+# directory the scripts were developed in, which quietly became the wrong
+# machine's path the moment they moved into the project.
+BACKUP = Path(__file__).parent / "pack-previous"
 ATTEMPTS = 6
 
 # Temperature matters more than attempts for word accuracy: at 0.9 the model

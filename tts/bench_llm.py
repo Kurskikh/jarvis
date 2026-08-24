@@ -11,7 +11,7 @@ The token is read from the environment and never printed. Set it in the shell
 you run this from - it does not need to go anywhere else:
 
     $env:LM_API_TOKEN = "<your token>"
-    I:\jarvis-tts\venv\Scripts\python.exe I:\jarvis-tts\bench_llm.py
+    .\venv\Scripts\python.exe bench_llm.py
 
     # optional: a different model or endpoint
     python bench_llm.py --model gemma-4-e4b-it-heretic --url http://127.0.0.1:1234/v1
