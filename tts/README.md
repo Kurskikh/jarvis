@@ -114,13 +114,54 @@ card's own total is read separately, from the driver.
 there, whatever they are holding, and neither can the sidecar itself - to free
 what IT holds, unload the model.
 
+## The clips Jarvis plays by itself
+
+Twenty-three of them, in `resources/sound/voices/jarvis-og-tts/ru/`: "да, сэр"
+when it hears its name, "думаю над ответом" while an answer is on its way,
+"выполнено" when a command ran. They are baked from the same reference the live
+voice clones from, so **a new reference makes them the wrong voice** - they say
+the same words in the old one until they are recorded again.
+
+The Заготовки tab lists them with what each says, plays any of them, and
+re-records one or all. What a clip says is now part of the pack: `voice.toml`
+carries a `[lines.ru]` table, so the pack can tell you what `reply2.wav` is
+supposed to be without opening a script in another folder. Jarvis ignores that
+table - serde skips fields it does not know - and a test pins that it still
+parses.
+
+Each take is checked the way every spoken answer is, and a mangled one is
+retaken. That is a weaker check than `bake_pack_qwen.py` does - the script also
+transcribes each take with whisper and compares it to the line, six attempts
+across four temperatures - but the script needs whisper, which is deliberately
+not installed here, and in the console a person is listening with the play
+button right beside the record button. The previous file is kept in
+`jarvis-og-tts-previous/` before it is overwritten: the model never produces the
+same take twice.
+
+## Voices, and which model can do what
+
+| family | how the voice is chosen | reference | instruct |
+|---|---|---|---|
+| `-Base` | cloned from the reference recording | required | usually read aloud instead of followed |
+| `-CustomVoice` | one of nine built-in names | ignored | controls the manner |
+| `-VoiceDesign` | described in words | ignored | required - it is the whole input |
+
+The console follows the loaded model: the built-in voice list appears only for
+CustomVoice, and the note under the instruction field changes to say whether it
+will be followed or spoken. Language is a dropdown; `Auto` lets the model decide
+from the text, which helps when an answer has English words in it.
+
 | route | what it does |
 |---|---|
-| `/` | the console, in two tabs: **Синтез** to try a line, change sampling, switch model or reference, and **Видеопамять** to see what is holding the card |
+| `/` | the console, in three tabs: **Синтез** to try a line, change sampling, switch model, voice or reference; **Заготовки** to see and re-record the clips Jarvis plays without asking the model; **Видеопамять** to see what is holding the card |
 | `/speak` | synthesise. Length-prefixed frames, streamed |
 | `/health` | up, which model, sample rate, which reference |
 | `/models` | what can be loaded, and what each one is good for |
 | `/model` | load a different one |
+| `/pack` | the voice pack: every clip, what it says, how long it runs |
+| `/pack/audio` | one clip, to listen to |
+| `/pack/line` | change what a clip is supposed to say |
+| `/pack/bake` | record one clip again in the voice loaded now |
 | `/gpu` | the card, and every process holding video memory |
 | `/gpu/kill` | end one of them |
 | `/config` | the saved settings, read and write |

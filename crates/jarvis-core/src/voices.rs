@@ -278,3 +278,45 @@ pub fn play_thinking() { play(structs::Reaction::Thinking); }
 pub fn play_thanks() { play(structs::Reaction::Thanks); }
 pub fn play_error() { play(structs::Reaction::Error); }
 pub fn play_goodbye() { play(structs::Reaction::Goodbye); }
+
+#[cfg(test)]
+mod shipped_pack_tests {
+    use super::structs::VoiceConfig;
+
+    fn shipped(id: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../resources/sound/voices")
+            .join(id)
+            .join("voice.toml");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e))
+    }
+
+    // The TTS console writes a [lines.ru] table into voice.toml so the pack can
+    // say what each of its clips contains - the text used to live only inside a
+    // Python script, and the pack on disk could not tell you what reply2.wav
+    // was meant to be. Serde ignores fields it does not know, so the assistant
+    // never sees it; this pins that, because the file is now written by
+    // something other than a person and a silent parse failure here would take
+    // the assistant's voice away.
+    #[test]
+    fn every_shipped_pack_still_parses() {
+        for id in ["jarvis-og-tts", "jarvis-og", "jarvis-remaster", "jarvis-howdy"] {
+            let text = shipped(id);
+            let parsed: Result<VoiceConfig, _> = toml::from_str(&text);
+            assert!(parsed.is_ok(), "{} no longer parses: {:?}", id, parsed.err());
+        }
+    }
+
+    #[test]
+    fn the_console_written_table_is_ignored_rather_than_rejected() {
+        let text = shipped("jarvis-og-tts");
+        assert!(text.contains("[lines.ru]"),
+                "the console writes the spoken text here; if this moved, the \
+                 pack no longer describes itself");
+
+        let cfg: VoiceConfig = toml::from_str(&text).expect("must parse");
+        let ru = cfg.reactions.get("ru").expect("the pack ships Russian");
+        assert!(!ru.reply.is_empty(), "the wake-word reply is what plays most often");
+    }
+}

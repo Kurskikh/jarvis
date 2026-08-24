@@ -69,3 +69,11 @@ tree.txt
 # assistant matches no commands at all.
 !/models/app/catalog/all-MiniLM-L6-v2/*
 !/models/app/catalog/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/*
+
+# What the console keeps before it overwrites a voice clip.
+#
+# The model never produces the same take twice, so a good clip replaced by a
+# worse one cannot be got back by asking again - but this is a working copy of
+# something already in git history, and it belongs on disk rather than in the
+# repository.
+resources/sound/voices/*-previous/

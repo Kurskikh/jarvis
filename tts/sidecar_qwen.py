@@ -162,6 +162,104 @@ def vram():
     }
 
 
+# ------------------------------------------------------------ the voice pack
+
+# Where Jarvis keeps the clips it plays without asking the model: "да, сэр" when
+# the name is heard, "думаю над ответом" while an answer is on its way. They are
+# baked from the same reference the live voice clones from, so a new reference
+# means they no longer match the voice - which is exactly the job that had no
+# interface until now and lived in a script nobody could run without whisper.
+PACK_DIR = HERE.parent / "resources" / "sound" / "voices" / "jarvis-og-tts"
+PACK_LANG = "ru"
+
+
+def _pack_doc():
+    """voice.toml, parsed so it can be written back with its comments intact."""
+    import tomlkit
+    path = PACK_DIR / "voice.toml"
+    return tomlkit.parse(path.read_text(encoding="utf-8")), path
+
+
+def _clip_path(stem):
+    """
+    The file for one clip, or None if the name is not a plain stem.
+
+    A stem arrives over HTTP and is turned into a path, so it is checked rather
+    than trusted: without this, "../../../something" would be a way to read and
+    overwrite files outside the pack.
+    """
+    stem = (stem or "").strip()
+    if not stem or stem.startswith((".", "_")) or len(stem) > 64:
+        return None
+    if any(c in stem for c in '/' + chr(92) + ':*?"<>|'):
+        return None
+    return PACK_DIR / PACK_LANG / (stem + ".wav")
+
+
+def _clip_seconds(path):
+    try:
+        info = sf.info(str(path))
+        return round(info.frames / info.samplerate, 2)
+    except Exception:
+        return None
+
+
+def _pack_lines(doc):
+    table = doc.get("lines", {})
+    return (table.get(PACK_LANG, {}) if table else {}) or {}
+
+
+def pack_rows():
+    """
+    Every clip in the pack, in the order the reactions declare them.
+
+    A stem can be named by a reaction with no file yet, and a file can sit in
+    the folder with no reaction pointing at it. Both are listed: the first is
+    something to bake, the second is something nobody ever plays.
+    """
+    doc, _ = _pack_doc()
+    reactions = (doc.get("reactions", {}) or {}).get(PACK_LANG, {}) or {}
+    lines = _pack_lines(doc)
+    folder = PACK_DIR / PACK_LANG
+
+    rows, seen = [], set()
+    for reaction, stems in reactions.items():
+        for stem in stems:
+            stem = str(stem)
+            if stem in seen:
+                continue
+            seen.add(stem)
+            wav = folder / (stem + ".wav")
+            rows.append({
+                "stem": stem,
+                "reaction": str(reaction),
+                "text": str(lines.get(stem, "")),
+                "exists": wav.exists(),
+                "secs": _clip_seconds(wav) if wav.exists() else None,
+                "orphan": False,
+            })
+
+    if folder.exists():
+        for wav in sorted(folder.glob("*.wav")):
+            if wav.stem in seen or wav.stem.startswith("_"):
+                continue
+            rows.append({
+                "stem": wav.stem, "reaction": "", "text": str(lines.get(wav.stem, "")),
+                "exists": True, "secs": _clip_seconds(wav), "orphan": True,
+            })
+
+    return rows
+
+
+def _set_line(doc, stem, text):
+    import tomlkit
+    if "lines" not in doc:
+        doc["lines"] = tomlkit.table(True)
+    if PACK_LANG not in doc["lines"]:
+        doc["lines"][PACK_LANG] = tomlkit.table()
+    doc["lines"][PACK_LANG][stem] = text
+
+
 # ------------------------------------------------------- who holds the card
 
 # The address this is actually listening on, filled in by main().
@@ -340,6 +438,15 @@ CONFIG_PATH = HERE / "sidecar_qwen_config.json"
 # the reference entirely, so picking one would quietly replace Jarvis with
 # somebody else. They are listed so the console can say that out loud rather
 # than leaving it to be discovered.
+# What the models will accept. "Auto" lets the model decide from the text,
+# which is the useful one here: answers come back with English words in them -
+# model names, file paths, the odd borrowed term - and read as Russian they
+# come out mangled.
+SUPPORTED_LANGUAGES = [
+    "Auto", "Russian", "English", "Chinese", "Japanese", "Korean",
+    "German", "French", "Portuguese", "Spanish", "Italian",
+]
+
 KNOWN_MODELS = [
     {"id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base", "clones": True,
      "note": "клонирование, ~1.5 ГБ, самая быстрая"},
@@ -359,6 +466,9 @@ DEFAULTS = dict(KNOB_DEFAULTS)
 
 # the reference slice as last applied, or None to keep what the command line said
 SAVED_REFERENCE = None
+# likewise for the language and the built-in voice
+SAVED_LANGUAGE = None
+SAVED_SPEAKER = None
 
 
 def load_config():
@@ -370,9 +480,11 @@ def load_config():
     afternoon of listening, and the flag that caused it is in a shortcut
     nobody reads. --reset-config is there for when the file is the problem.
     """
-    global DEFAULTS, SAVED_REFERENCE
+    global DEFAULTS, SAVED_REFERENCE, SAVED_LANGUAGE, SAVED_SPEAKER
     DEFAULTS = dict(KNOB_DEFAULTS)
     SAVED_REFERENCE = None
+    SAVED_LANGUAGE = None
+    SAVED_SPEAKER = None
     if not CONFIG_PATH.exists():
         return
     try:
@@ -385,6 +497,14 @@ def load_config():
         SAVED_REFERENCE = ref
     if saved.get("model_id"):
         DEFAULTS["model_id"] = str(saved["model_id"])
+    # Same rule as the model and the reference: chosen in the console, kept
+    # across restarts. Held aside rather than put in DEFAULTS because these
+    # name a language and a voice, not a sampling value, and DEFAULTS is
+    # handed straight to the model as keyword arguments.
+    if saved.get("language") in SUPPORTED_LANGUAGES:
+        SAVED_LANGUAGE = str(saved["language"])
+    if saved.get("speaker"):
+        SAVED_SPEAKER = str(saved["speaker"])
     for k, default in KNOB_DEFAULTS.items():
         if k in saved:
             try:
@@ -417,6 +537,8 @@ def save_config():
         body["reference"] = {"path": str(CFG.reference), "start": CFG.start,
                              "length": CFG.length, "snap": CFG.snap}
         body["model_id"] = CFG.model_id
+        body["language"] = CFG.language
+        body["speaker"] = getattr(CFG, "speaker", "")
     CONFIG_PATH.write_text(json.dumps(body, indent=2), encoding="utf-8")
 
 
@@ -434,15 +556,65 @@ def knobs_from(body: dict) -> dict:
     return out
 
 
+# Three families, and they are asked for speech in three different ways.
+#
+# Only the cloning one was ever wired up here, which is why the CustomVoice and
+# VoiceDesign entries in the model list were half a feature: you could load one
+# and then had no way to say WHICH built-in voice, or to give the description
+# that is the entire point of VoiceDesign. The reference recording is ignored by
+# both - they do not clone anything.
+def model_kind(model_id=None):
+    mid = (model_id or CFG.model_id).lower()
+    if "customvoice" in mid:
+        return "custom"
+    if "voicedesign" in mid:
+        return "design"
+    return "clone"
+
+
+def model_speakers():
+    """The built-in voices of the loaded model, or [] if it has none."""
+    if _model is None:
+        return []
+    try:
+        names = _model.get_supported_speakers()
+    except Exception:
+        return []
+    return sorted(str(n) for n in (names or []))
+
+
+def _speaker():
+    """The chosen built-in voice, falling back to whatever the model offers."""
+    wanted = (getattr(CFG, "speaker", "") or "").strip()
+    names = model_speakers()
+    if wanted and (not names or wanted.lower() in {n.lower() for n in names}):
+        return wanted
+    return names[0] if names else wanted
+
+
 def synth_once(text: str, instruct: str = "", **knobs):
     """one attempt, whole answer at once; returns (audio, sample_rate)"""
     global _sample_rate
     m = model()
-    wavs, sr = m.generate_voice_clone(
-        text=text, language=CFG.language,
-        ref_audio=str(_slice_path), ref_text=_prompt_text,
-        instruct=instruct or None, **knobs,
-    )
+    kind = model_kind()
+
+    if kind == "custom":
+        wavs, sr = m.generate_custom_voice(
+            text=text, speaker=_speaker(), language=CFG.language,
+            instruct=instruct or None, **knobs)
+    elif kind == "design":
+        if not instruct:
+            raise RuntimeError(
+                "VoiceDesign строит голос по описанию - без инструкции ему нечего делать")
+        wavs, sr = m.generate_voice_design(
+            text=text, instruct=instruct, language=CFG.language, **knobs)
+    else:
+        wavs, sr = m.generate_voice_clone(
+            text=text, language=CFG.language,
+            ref_audio=str(_slice_path), ref_text=_prompt_text,
+            instruct=instruct or None, **knobs,
+        )
+
     _sample_rate = sr
     audio = wavs[0] if isinstance(wavs, (list, tuple)) else wavs
     if hasattr(audio, "detach"):
@@ -454,13 +626,29 @@ def synth_stream(text: str, instruct: str = "", chunk_size: int = None, **knobs)
     """yields (audio_chunk, sample_rate) as the model produces them"""
     global _sample_rate
     m = model()
-    for chunk, sr, _timing in m.generate_voice_clone_streaming(
+    kind = model_kind()
+    chunk = chunk_size or DEFAULTS.get("chunk_size", CFG.chunk_size)
+
+    if kind == "custom":
+        stream = m.generate_custom_voice_streaming(
+            text=text, speaker=_speaker(), language=CFG.language,
+            chunk_size=chunk, instruct=instruct or None, **knobs)
+    elif kind == "design":
+        if not instruct:
+            raise RuntimeError(
+                "VoiceDesign строит голос по описанию - без инструкции ему нечего делать")
+        stream = m.generate_voice_design_streaming(
+            text=text, instruct=instruct, language=CFG.language,
+            chunk_size=chunk, **knobs)
+    else:
+        stream = m.generate_voice_clone_streaming(
             text=text, language=CFG.language,
             ref_audio=str(_slice_path), ref_text=_prompt_text,
-            chunk_size=chunk_size or DEFAULTS.get("chunk_size", CFG.chunk_size),
-            instruct=instruct or None, **knobs):
+            chunk_size=chunk, instruct=instruct or None, **knobs)
+
+    for chunk_audio, sr, _timing in stream:
         _sample_rate = sr
-        a = np.asarray(chunk, dtype="float32").squeeze()
+        a = np.asarray(chunk_audio, dtype="float32").squeeze()
         if a.size:
             yield a, sr
 
@@ -511,6 +699,11 @@ def health():
         "prompt_text": _prompt_text,
         "stats": dict(_stats),
         "chunk_size": DEFAULTS.get("chunk_size", CFG.chunk_size),
+        "language": CFG.language,
+        "languages": SUPPORTED_LANGUAGES,
+        "kind": model_kind(),
+        "speaker": getattr(CFG, "speaker", ""),
+        "speakers": model_speakers(),
         "vram": vram(),
     }
 
@@ -594,7 +787,12 @@ def api_config_get():
             "reference": {"path": str(CFG.reference), "start": CFG.start,
                           "length": CFG.length, "snap": CFG.snap,
                           "secs": round(_slice_secs, 2), "text": _prompt_text},
-            "language": CFG.language, "saved_to": str(CONFIG_PATH)}
+            "language": CFG.language,
+            "speaker": getattr(CFG, "speaker", ""),
+            "kind": model_kind(),
+            "speakers": model_speakers(),
+            "languages": SUPPORTED_LANGUAGES,
+            "saved_to": str(CONFIG_PATH)}
 
 
 @app.post("/config")
@@ -629,10 +827,25 @@ def api_config_set(body: dict = Body(...)):
         except (TypeError, ValueError):
             return JSONResponse({"error": "chunk_size: expected a whole number"},
                                 status_code=400)
+    # Not a sampling knob, so it is handled apart from the loop above: it
+    # names a voice or a language rather than a number.
+    if "language" in body:
+        wanted = str(body["language"]).strip() or "Russian"
+        if wanted not in SUPPORTED_LANGUAGES:
+            return JSONResponse(
+                {"error": "язык {!r} не из списка: {}".format(
+                    wanted, ", ".join(SUPPORTED_LANGUAGES))}, status_code=400)
+        CFG.language = wanted
+        changed["language"] = wanted
+    if "speaker" in body:
+        CFG.speaker = str(body["speaker"]).strip()
+        changed["speaker"] = CFG.speaker
+
     save_config()
     print("defaults changed: " + ", ".join(f"{k}={v}" for k, v in changed.items()),
           flush=True)
-    return {"defaults": DEFAULTS, "changed": changed}
+    return {"defaults": DEFAULTS, "changed": changed,
+            "language": CFG.language, "speaker": getattr(CFG, "speaker", "")}
 
 
 @app.post("/reference")
@@ -747,6 +960,116 @@ def api_model(body: dict = Body(...)):
     print(f"model is now {wanted} (loaded in {took:.1f}s)", flush=True)
     return {"model": wanted, "changed": True, "took_secs": round(took, 1),
             "clones": known["clones"] if known else None, "vram": vram()}
+
+
+@app.get("/pack")
+def pack():
+    """The voice pack: what is in it, what each clip says, how long it runs."""
+    doc, _ = _pack_doc()
+    meta = doc.get("voice", {}) or {}
+    return {
+        "id": str(meta.get("id", "")),
+        "name": str(meta.get("name", "")),
+        "dir": str(PACK_DIR),
+        "lang": PACK_LANG,
+        "rows": pack_rows(),
+        "reference": Path(str(CFG.reference)).name,
+        "slice": {"start": CFG.start, "length": CFG.length,
+                  "secs": round(_slice_secs, 2)},
+        "model": CFG.model_id,
+        "loaded": _model is not None,
+    }
+
+
+@app.get("/pack/audio")
+def pack_audio(stem: str):
+    """One clip, for the console to play."""
+    wav = _clip_path(stem)
+    if wav is None or not wav.exists():
+        return JSONResponse({"error": "нет такого клипа"}, status_code=404)
+    return Response(content=wav.read_bytes(), media_type="audio/wav")
+
+
+@app.post("/pack/line")
+def pack_line(payload: dict = Body(...)):
+    """Change what a clip is supposed to say, leaving the rest of the file alone."""
+    import tomlkit
+    stem = (payload.get("stem") or "").strip()
+    if _clip_path(stem) is None:
+        return JSONResponse({"error": "недопустимое имя клипа"}, status_code=400)
+    text = (payload.get("text") or "").strip()
+
+    doc, path = _pack_doc()
+    _set_line(doc, stem, text)
+    path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    return {"stem": stem, "text": text}
+
+
+@app.post("/pack/bake")
+def pack_bake(payload: dict = Body(...)):
+    """
+    Record one clip again, in the voice currently loaded.
+
+    The take is checked the same way every spoken answer is - bad_take() rejects
+    a mangled one and it is retaken - so this needs no whisper, which is why the
+    baking script could not run in this environment at all. What it does NOT do
+    is the script's transcribe-and-compare: a person is listening here, and the
+    play button is right beside this one.
+
+    The previous file is kept before it is overwritten. The model never produces
+    the same take twice, so a good clip replaced by a worse one cannot be got
+    back by asking again.
+    """
+    import tomlkit
+
+    stem = (payload.get("stem") or "").strip()
+    wav_path = _clip_path(stem)
+    if wav_path is None:
+        return JSONResponse({"error": "недопустимое имя клипа"}, status_code=400)
+
+    doc, doc_path = _pack_doc()
+    lines = _pack_lines(doc)
+    sent = (payload.get("text") or "").strip()
+    text = sent or str(lines.get(stem, "")).strip()
+    if not text:
+        return JSONResponse(
+            {"error": "нечего произносить: у клипа нет текста"}, status_code=400)
+
+    # a text sent along with the bake is also the clip's new text
+    if sent and str(lines.get(stem, "")) != sent:
+        _set_line(doc, stem, sent)
+        doc_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+
+    knobs = knobs_from(payload)
+    t0 = time.time()
+    try:
+        with _lock:
+            _stats["requests"] += 1
+            audio, sr = synth_checked(text, tries=3, **knobs)
+    except RuntimeError as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+    data = wav_bytes(trim_head(audio, sr), sr)
+
+    kept = None
+    if wav_path.exists():
+        spare = PACK_DIR.parent / (PACK_DIR.name + "-previous") / PACK_LANG
+        spare.mkdir(parents=True, exist_ok=True)
+        kept = spare / (stem + ".wav")
+        kept.write_bytes(wav_path.read_bytes())
+
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    wav_path.write_bytes(data)
+
+    print(f"[pack] baked {stem} in {time.time()-t0:.1f}s :: {text}", flush=True)
+    return {
+        "stem": stem, "text": text,
+        "secs": _clip_seconds(wav_path),
+        "took_secs": round(time.time() - t0, 1),
+        "kept_previous": bool(kept),
+    }
 
 
 @app.get("/gpu")
@@ -904,6 +1227,7 @@ button.danger:hover{border-color:var(--warn)}
 
 <div class="tabs">
   <button class="tab on" id="tab-tts" onclick="showTab('tts')">Синтез</button>
+  <button class="tab" id="tab-pack" onclick="showTab('pack')">Заготовки</button>
   <button class="tab" id="tab-gpu" onclick="showTab('gpu')">Видеопамять</button>
 </div>
 
@@ -923,7 +1247,7 @@ button.danger:hover{border-color:var(--warn)}
   <div style="margin-top:11px">
     <label>Инструкция — как говорить</label>
     <input id="instruct" placeholder="пусто = обычное клонирование по образцу">
-    <div class="meta warn" style="margin-top:5px">Модель часто зачитывает инструкцию вслух вместо того,
+    <div class="meta warn" id="instructnote" style="margin-top:5px">Модель часто зачитывает инструкцию вслух вместо того,
       чтобы ей следовать. Проверено на русском, английском и китайском: надёжно работает только пустое поле.</div>
   </div>
 </div>
@@ -935,6 +1259,13 @@ button.danger:hover{border-color:var(--warn)}
     <div><label>top_p</label><input id="top_p" type="number" step="0.05" value="1.0"></div>
     <div><label>Штраф за повтор</label><input id="repetition_penalty" type="number" step="0.01" value="1.05"></div>
   </div>
+  <div class="row" style="margin-top:11px">
+    <div><label>Язык</label><select id="language" onchange="saveVoice()"></select></div>
+    <div id="speakerbox" style="display:none"><label>Встроенный голос</label>
+      <select id="speaker" onchange="saveVoice()"></select></div>
+  </div>
+  <div class="meta" id="langnote" style="margin-top:8px"></div>
+
   <div class="row" style="margin-top:11px">
     <div><label>Кусок потока</label><input id="chunk_size" type="number" step="1" value="12"></div>
     <div><label>Максимум токенов</label><input id="max_new_tokens" type="number" step="128" value="2048"></div>
@@ -999,6 +1330,38 @@ button.danger:hover{border-color:var(--warn)}
 <div class="card"><div id="list"></div></div>
 </div><!-- /pane-tts -->
 
+<div id="pane-pack" style="display:none">
+  <div class="card">
+    <div class="bar" style="margin-top:0">
+      <button class="ghost" onclick="packLoad()">Обновить</button>
+      <button class="ghost" id="bakeall" onclick="bakeAll()">Перегенерировать всё</button>
+      <span id="packmeta" class="meta"></span>
+    </div>
+    <div class="meta" style="margin-top:9px">Это реплики, которые Джарвис проигрывает
+      <b>не спрашивая модель</b>: «да, сэр» на своё имя, «думаю над ответом» пока идёт ответ.
+      Они записаны тем же эталоном, которым клонируется живой голос, — <b>сменил эталон,
+      значит заготовки больше ему не соответствуют</b> и их стоит перезаписать.
+      Текст можно поправить прямо в строке. Прежний файл сохраняется рядом с пакетом
+      перед перезаписью: одинаковый дубль модель дважды не выдаёт.</div>
+    <div id="packstatus" class="meta" style="margin-top:9px"></div>
+  </div>
+
+  <div class="card">
+    <table>
+      <colgroup><col style="width:13%"><col style="width:13%"><col style="width:41%">
+                <col style="width:9%"><col style="width:24%"></colgroup>
+      <thead><tr>
+        <th onclick="packSort('reaction')">Реакция <span id="pr-reaction" class="arrow"></span></th>
+        <th onclick="packSort('stem')">Файл <span id="pr-stem" class="arrow"></span></th>
+        <th>Текст</th>
+        <th class="num" onclick="packSort('secs')">Длит. <span id="pr-secs" class="arrow"></span></th>
+        <th class="act"></th>
+      </tr></thead>
+      <tbody id="packrows"><tr><td colspan="5" class="meta">…</td></tr></tbody>
+    </table>
+  </div>
+</div><!-- /pane-pack -->
+
 <div id="pane-gpu" style="display:none">
   <div class="card">
     <div class="bar" style="margin-top:0">
@@ -1029,12 +1392,67 @@ button.danger:hover{border-color:var(--warn)}
 </div><!-- /pane-gpu -->
 <script>
 const $=id=>document.getElementById(id)
+// What kind of model is loaded decides which controls make sense: the
+// cloning ones take their voice from the reference recording and ignore both
+// of these, CustomVoice needs a name, VoiceDesign needs a description and
+// nothing else.
+let KIND='clone'
+
+function applyKind(h){
+  KIND = h.kind || 'clone'
+  const names = h.speakers || []
+  const box = $('speakerbox')
+  box.style.display = (KIND==='custom' && names.length) ? '' : 'none'
+  if(KIND==='custom' && names.length){
+    const sel = $('speaker')
+    if(sel.options.length !== names.length){
+      sel.innerHTML = names.map(n => '<option value="'+esc(n)+'">'+esc(n)+'</option>').join('')
+    }
+    if(h.speaker) sel.value = h.speaker
+  }
+  const note = $('instructnote')
+  if(KIND==='design'){
+    note.className = 'meta'
+    note.textContent = 'VoiceDesign строит голос по этому описанию — без него ему нечего делать. '
+      + 'Образец записи не используется.'
+  }else if(KIND==='custom'){
+    note.className = 'meta'
+    note.textContent = 'Голос берётся из списка слева, образец записи не используется. '
+      + 'Инструкция здесь управляет манерой.'
+  }else{
+    note.className = 'meta warn'
+    note.textContent = 'Модель часто зачитывает инструкцию вслух вместо того, чтобы ей следовать. '
+      + 'Проверено на русском, английском и китайском: надёжно работает только пустое поле.'
+  }
+  $('langnote').textContent = ($('language').value === 'Auto')
+    ? 'Язык определяется по тексту. Полезно, когда в ответе попадаются английские слова.'
+    : 'Текст читается как выбранный язык, что бы в нём ни было написано.'
+}
+
+async function saveVoice(){
+  const body = {language: $('language').value}
+  if(KIND==='custom' && $('speaker').value) body.speaker = $('speaker').value
+  try{
+    const r = await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)})
+    const j = await r.json()
+    if(!r.ok){ $('langnote').textContent = j.error || ('ошибка '+r.status); return }
+  }catch(e){ $('langnote').textContent = 'сайдкар не отвечает'; return }
+  refresh()
+}
+
 async function refresh(){
   try{
     const h=await (await fetch('/health')).json()
     const v=h.vram||{}
     $('vram').textContent=(h.ok?'в памяти':'выгружена')
       +(v.card_free_mb?(' · держим '+v.ours_held_mb+' МБ, на карте свободно '+v.card_free_mb+' из '+v.card_total_mb):'')
+    if(!$('language').options.length && h.languages){
+      $('language').innerHTML = h.languages.map(l =>
+        '<option value="'+esc(l)+'">'+esc(l)+'</option>').join('')
+    }
+    if(h.language) $('language').value = h.language
+    applyKind(h)
     $('banner').textContent=(h.ok?'':'модель не в памяти \u00b7 ')
       +h.model+' \u00b7 эталон '+h.slice.secs+'s \u00b7 '+(h.sample_rate||'?')+' Гц'
   }catch(e){ $('vram').textContent='сайдкар не отвечает' }
@@ -1186,20 +1604,135 @@ let gpuTimer=null
 // this whole page is a Python string, and Python consumes the escape first.
 let GPU=[]
 function showTab(which){
-  const on = which==='gpu'
-  $('pane-tts').style.display = on ? 'none' : ''
-  $('pane-gpu').style.display = on ? '' : 'none'
-  $('tab-tts').className = on ? 'tab' : 'tab on'
-  $('tab-gpu').className = on ? 'tab on' : 'tab'
+  for(const name of ['tts','pack','gpu']){
+    $('pane-'+name).style.display = (name===which) ? '' : 'none'
+    $('tab-'+name).className = (name===which) ? 'tab on' : 'tab'
+  }
   // Reading the counters costs a second of a Windows utility's time, so it
-  // happens while the tab is open and not otherwise.
+  // happens while that tab is open and not otherwise.
   clearInterval(gpuTimer); gpuTimer=null
-  if(on){ gpuLoad(); gpuTimer=setInterval(gpuLoad, 5000) }
+  if(which==='gpu'){ gpuLoad(); gpuTimer=setInterval(gpuLoad, 5000) }
+  if(which==='pack'){ packLoad() }
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) }
 // Biggest first, because the question being asked is always "who is eating
 // the card". Clicking a heading again turns that column around.
+// ---------------------------------------------------------------- the pack
+let PACK=[], PACKSORT='', PACKDIR=1, BAKING=false, STOPBAKE=false
+
+async function packLoad(){
+  try{
+    const p = await (await fetch('/pack')).json()
+    PACK = p.rows
+    $('packmeta').textContent = p.name + ' · эталон ' + p.reference
+      + ' ' + p.slice.secs + 's · ' + p.rows.length + ' клипов'
+      + (p.loaded ? '' : ' · модель не в памяти, первая запись её загрузит')
+    packDraw()
+  }catch(e){ $('packmeta').textContent='сайдкар не отвечает' }
+}
+
+function packSort(key){
+  if(PACKSORT===key){ PACKDIR = -PACKDIR } else { PACKSORT = key; PACKDIR = 1 }
+  packDraw()
+}
+
+function packDraw(){
+  const k=PACKSORT, d=PACKDIR
+  if(k){
+    PACK.sort((a,b) => {
+      if(k==='secs') return ((a.secs||0)-(b.secs||0))*d
+      const x=String(a[k]).toLowerCase(), y=String(b[k]).toLowerCase()
+      return x<y ? -d : (x>y ? d : 0)
+    })
+  }
+  for(const c of ['reaction','stem','secs']){
+    $('pr-'+c).textContent = (c===k) ? (d>0 ? '▲' : '▼') : ''
+  }
+  $('packrows').innerHTML = PACK.map((r, i) => {
+    const secs = r.secs ? r.secs.toFixed(2)+'с' : '—'
+    const tag = r.orphan ? '<span class="why">ничья</span>' : esc(r.reaction)
+    return '<tr id="pk'+i+'"><td>'+tag+'</td><td>'+esc(r.stem)+'</td>'
+      + '<td><input id="pt'+i+'" value="'+esc(r.text)+'" onchange="packSave('+i+')"></td>'
+      + '<td class="num">'+secs+'</td>'
+      + '<td class="act">'
+      + (r.exists ? '<button class="small ghost" onclick="packPlay('+i+')">▶</button> ' : '')
+      + '<button class="small ghost" onclick="packBake('+i+')">Записать</button>'
+      + '</td></tr>'
+  }).join('')
+}
+
+function packPlay(i){
+  const r = PACK[i]
+  const a = $('packaudio') || Object.assign(document.createElement('audio'), {id:'packaudio'})
+  if(!a.parentNode) document.body.appendChild(a)
+  // the file changes under the same name every time it is baked, so the
+  // browser has to be told this is not the one it already has
+  a.src = '/pack/audio?stem=' + encodeURIComponent(r.stem) + '&v=' + Date.now()
+  a.play()
+}
+
+async function packSave(i){
+  const r = PACK[i], text = $('pt'+i).value
+  if(text === r.text) return
+  try{
+    await fetch('/pack/line',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({stem:r.stem, text:text})})
+    r.text = text
+    packStatus('текст ' + r.stem + ' сохранён')
+  }catch(e){ packStatus('не сохранить текст', true) }
+}
+
+function packStatus(msg, bad){
+  const st=$('packstatus'); st.className = bad ? 'meta warn' : 'meta'; st.textContent = msg
+}
+
+async function bakeOne(i){
+  const r = PACK[i], text = ($('pt'+i)||{}).value || r.text
+  const row = $('pk'+i); if(row) row.style.opacity = '.5'
+  try{
+    const res = await fetch('/pack/bake',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({stem:r.stem, text:text})})
+    const j = await res.json()
+    if(!res.ok){ packStatus(r.stem + ': ' + (j.error || res.status), true); return false }
+    r.text = j.text; r.secs = j.secs; r.exists = true
+    packStatus(r.stem + ' записан за ' + j.took_secs + 'с (' + j.secs + 'с звука)')
+    return true
+  }catch(e){ packStatus(r.stem + ': сайдкар не ответил', true); return false }
+  finally{ if(row) row.style.opacity = '' }
+}
+
+async function packBake(i){
+  if(BAKING) return
+  BAKING = true
+  packStatus('записываю ' + PACK[i].stem + '... первая запись грузит модель, это долго')
+  await bakeOne(i)
+  BAKING = false
+  packDraw()
+}
+
+async function bakeAll(){
+  if(BAKING) return
+  if(!confirm('Перезаписать все ' + PACK.length + ' заготовок? Это займёт минуты. '
+    + 'Прежние файлы сохранятся рядом с пакетом.')) return
+  BAKING = true; STOPBAKE = false
+  $('bakeall').textContent = 'Остановить'
+  $('bakeall').onclick = () => { STOPBAKE = true }
+  let done = 0
+  for(let i=0; i<PACK.length; i++){
+    if(STOPBAKE){ packStatus('остановлено после ' + done + ' из ' + PACK.length); break }
+    packStatus('записываю ' + (i+1) + ' из ' + PACK.length + ': ' + PACK[i].stem)
+    if(await bakeOne(i)) done++
+  }
+  if(!STOPBAKE) packStatus('готово: ' + done + ' из ' + PACK.length)
+  $('bakeall').textContent = 'Перегенерировать всё'
+  $('bakeall').onclick = bakeAll
+  BAKING = false
+  packDraw()
+}
+
+// ----------------------------------------------------------- video memory
 let SORTKEY='mb', SORTDIR=-1
 let CANKILL=true
 
@@ -1311,7 +1844,10 @@ def main():
     # the video memory tab works, and the model arrives when it is asked for.
     ap.add_argument("--preload", action="store_true",
                     help="load the model at startup instead of on the first request")
-    ap.add_argument("--language", default="Russian")
+    ap.add_argument("--language", default="Russian", choices=SUPPORTED_LANGUAGES)
+    # Which built-in voice, for the CustomVoice models. Ignored by the cloning
+    # ones, which take their voice from the reference recording instead.
+    ap.add_argument("--speaker", default="")
     ap.add_argument("--reference", default=str(HERE / "xamples" / "jarvis_sample.wav"))
     # the same slice the voice pack was baked from; changing it changes the voice
     ap.add_argument("--start", type=float, default=5.0)
@@ -1347,6 +1883,10 @@ def main():
     # the reference: what was set there wins until --reset-config
     if DEFAULTS.get("model_id"):
         a.model_id = DEFAULTS["model_id"]
+    if SAVED_LANGUAGE:
+        a.language = SAVED_LANGUAGE
+    if SAVED_SPEAKER:
+        a.speaker = SAVED_SPEAKER
 
     # a reference set from the console outlives the process; the command line
     # is only the starting point. --reset-config goes back to it.

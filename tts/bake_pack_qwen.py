@@ -1,7 +1,8 @@
 """
 Re-bake the voice pack with Qwen3-TTS.
 
-Same 23 lines, same reference slice, same checks - only the engine changes.
+Same lines, same reference slice, same checks - only the engine changes.
+The lines come from the pack itself now; see _pack_lines below.
 One-shot mode on purpose: it is the path where a take can be inspected and
 retaken, and for baking, latency does not matter at all while a bad clip lives
 in the pack forever.
@@ -41,22 +42,24 @@ ATTEMPTS = 6
 # rather than fixed, because too cold has its own failures.
 TEMPS = [0.9, 0.6, 0.75, 0.45]
 
-LINES = {
-    "run": "К вашим услугам, сэр.",
-    "greet_morning": "Доброе утро, сэр. Все системы в норме.",
-    "greet_day": "Добрый день, сэр.",
-    "greet_evening": "Добрый вечер, сэр.",
-    "greet_night": "Доброй ночи, сэр. Я не сплю.",
-    "reply1": "Слушаю, сэр.", "reply2": "Да, сэр.", "reply3": "К вашим услугам.",
-    "ok1": "Выполнено, сэр.", "ok2": "Готово.", "ok3": "Запрос выполнен, сэр.",
-    "ok4": "Сделано.",
-    "thinking1": "Думаю над ответом, сэр.", "thinking2": "Секунду, сэр.",
-    "thinking3": "Работаю над запросом.",
-    "not_found1": "Я не понял команду, сэр.", "not_found2": "Такой команды у меня нет.",
-    "thanks1": "Всегда рад помочь, сэр.", "thanks2": "Не за что.",
-    "error1": "Есть небольшая проблема, сэр.", "error2": "Команду выполнить не удалось.",
-    "goodbye1": "До свидания, сэр.", "goodbye2": "Отключаюсь.",
-}
+# What to say, read from the pack rather than kept here.
+#
+# It used to be a dict in this file, which meant the pack on disk could not say
+# what any of its own clips contained and the console had nothing to show. The
+# text lives in voice.toml now, beside the recordings of it, and both this
+# script and the console read that one table - so a line edited in the console
+# is the line this script bakes.
+def _pack_lines():
+    import tomlkit
+    doc = tomlkit.parse((PACK / "voice.toml").read_text(encoding="utf-8"))
+    table = doc.get("lines", {})
+    lines = (table.get("ru", {}) if table else {}) or {}
+    if not lines:
+        sys.exit(f"{PACK / 'voice.toml'} has no [lines.ru] table - nothing to say")
+    return {str(k): str(v) for k, v in lines.items()}
+
+
+LINES = _pack_lines()
 
 VOWELS = set("аеёиоуыэюя")
 syl = lambda s: sum(1 for c in s.lower() if c in VOWELS)
