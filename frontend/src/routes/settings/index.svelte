@@ -372,7 +372,7 @@
         // would claim nothing is installed.
         // own try/catch: this must never abort the settings load below
         try {
-            const [intentOpts, slotsOpts, vadOpts] = await Promise.all([
+            const [intentOpts, slotsOpts, vadOpts, sttOpts] = await Promise.all([
                 invoke<BackendOption[]>("list_backend_options", { task: "intent" }),
                 invoke<BackendOption[]>("list_backend_options", { task: "slots" }),
                 invoke<BackendOption[]>("list_backend_options", { task: "vad" }),
@@ -381,11 +381,13 @@
             intentBackends = intentOpts
             slotsBackends = slotsOpts
             vadBackends = vadOpts
+            sttBackends = sttOpts
         } catch (err) {
             console.error("Failed to load backend options:", err)
             intentBackends = []
             slotsBackends = []
             vadBackends = []
+            sttBackends = []
         }
         backendsLoaded = true
 
