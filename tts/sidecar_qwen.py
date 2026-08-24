@@ -232,14 +232,65 @@ def vram():
 # baked from the same reference the live voice clones from, so a new reference
 # means they no longer match the voice - which is exactly the job that had no
 # interface until now and lived in a script nobody could run without whisper.
-PACK_DIR = HERE.parent / "resources" / "sound" / "voices" / "jarvis-og-tts"
+VOICES_DIR = HERE.parent / "resources" / "sound" / "voices"
+
+# Which pack the Заготовки tab is working on. A whole voice at a time: the
+# clips only make sense together, and baking half of one pack with the
+# reference of another is how a voice ends up sounding like two people.
+PACK_ID = "jarvis-og-tts"
 PACK_LANG = "ru"
+
+
+def _pack_dir():
+    return VOICES_DIR / PACK_ID
+
+
+def _pack_langs(doc):
+    langs = (doc.get("voice", {}) or {}).get("languages", []) or []
+    return [str(x) for x in langs] or ["ru"]
+
+
+def list_packs():
+    """
+    Every voice on disk, whether it has any clips yet or not.
+
+    A pack with no recordings is a real state and worth showing: it is what a
+    voice looks like between being created and being baked.
+    """
+    out = []
+    if not VOICES_DIR.exists():
+        return out
+    import tomlkit
+    for folder in sorted(VOICES_DIR.iterdir()):
+        toml = folder / "voice.toml"
+        if not folder.is_dir() or not toml.exists():
+            continue
+        try:
+            doc = tomlkit.parse(toml.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        meta = doc.get("voice", {}) or {}
+        langs = _pack_langs(doc)
+        clips = sum(1 for lang in langs for _ in (folder / lang).glob("*.wav")
+                    if (folder / lang).exists())
+        lines = len((doc.get("lines", {}) or {}).get(PACK_LANG, {}) or {})
+        out.append({
+            "id": str(meta.get("id", folder.name)),
+            "name": str(meta.get("name", folder.name)),
+            "author": str(meta.get("author", "")),
+            "languages": langs,
+            "clips": clips,
+            "lines": lines,
+            "current": folder.name == PACK_ID,
+            "folder": folder.name,
+        })
+    return out
 
 
 def _pack_doc():
     """voice.toml, parsed so it can be written back with its comments intact."""
     import tomlkit
-    path = PACK_DIR / "voice.toml"
+    path = _pack_dir() / "voice.toml"
     return tomlkit.parse(path.read_text(encoding="utf-8")), path
 
 
@@ -256,7 +307,7 @@ def _clip_path(stem):
         return None
     if any(c in stem for c in '/' + chr(92) + ':*?"<>|'):
         return None
-    return PACK_DIR / PACK_LANG / (stem + ".wav")
+    return _pack_dir() / PACK_LANG / (stem + ".wav")
 
 
 def _clip_seconds(path):
@@ -283,7 +334,7 @@ def pack_rows():
     doc, _ = _pack_doc()
     reactions = (doc.get("reactions", {}) or {}).get(PACK_LANG, {}) or {}
     lines = _pack_lines(doc)
-    folder = PACK_DIR / PACK_LANG
+    folder = _pack_dir() / PACK_LANG
 
     rows, seen = [], set()
     for reaction, stems in reactions.items():
@@ -1055,6 +1106,95 @@ def api_model(body: dict = Body(...)):
     return {"model": wanted, "started": True}
 
 
+@app.get("/voices")
+def voices():
+    """Every voice pack on disk, and which one the Заготовки tab is editing."""
+    return {"current": PACK_ID, "packs": list_packs(),
+            "dir": str(VOICES_DIR)}
+
+
+@app.post("/voices/select")
+def voices_select(payload: dict = Body(...)):
+    """Work on a different voice."""
+    global PACK_ID
+    wanted = (payload.get("id") or "").strip()
+    if not (VOICES_DIR / wanted / "voice.toml").exists():
+        return JSONResponse({"error": "нет такого голоса"}, status_code=404)
+    PACK_ID = wanted
+    return {"current": PACK_ID}
+
+
+@app.post("/voices/new")
+def voices_new(payload: dict = Body(...)):
+    """
+    Start a new voice, copying the shape of an existing one.
+
+    Only the shape: the reactions a pack must answer to and the lines each clip
+    says. No recordings - those come from the record button, in whatever voice
+    the reference is set to now. That separation is the point of the whole
+    thing: the words stay the same and the voice changes.
+    """
+    import tomlkit
+
+    global PACK_ID
+
+    folder_name = (payload.get("id") or "").strip().lower()
+    if not folder_name or not all(c.isalnum() or c in "-_" for c in folder_name):
+        return JSONResponse(
+            {"error": "имя из латиницы, цифр, дефиса и подчёркивания"}, status_code=400)
+    if len(folder_name) > 48:
+        return JSONResponse({"error": "имя слишком длинное"}, status_code=400)
+
+    target = VOICES_DIR / folder_name
+    if target.exists():
+        return JSONResponse({"error": f"голос {folder_name} уже есть"}, status_code=409)
+
+    source = VOICES_DIR / (payload.get("from") or PACK_ID)
+    if not (source / "voice.toml").exists():
+        return JSONResponse({"error": "не найден голос-образец"}, status_code=404)
+
+    doc = tomlkit.parse((source / "voice.toml").read_text(encoding="utf-8"))
+    doc["voice"]["id"] = folder_name
+    doc["voice"]["name"] = (payload.get("name") or folder_name).strip()
+    doc["voice"]["author"] = (payload.get("author") or "").strip()
+
+    target.mkdir(parents=True)
+    for lang in _pack_langs(doc):
+        (target / lang).mkdir(exist_ok=True)
+    (target / "voice.toml").write_text(tomlkit.dumps(doc), encoding="utf-8")
+
+    PACK_ID = folder_name
+    print(f"[pack] new voice {folder_name} from {source.name}", flush=True)
+    return {"created": folder_name, "current": PACK_ID,
+            "from": source.name, "packs": list_packs()}
+
+
+@app.post("/voices/delete")
+def voices_delete(payload: dict = Body(...)):
+    """
+    Remove a voice, but never one that ships with the assistant.
+
+    The four that come with it are in git; a console that could delete them
+    would be a console that can break the install with one click.
+    """
+    import shutil
+    global PACK_ID
+    SHIPPED = {"jarvis-og", "jarvis-og-tts", "jarvis-remaster", "jarvis-howdy"}
+    wanted = (payload.get("id") or "").strip()
+    if wanted in SHIPPED:
+        return JSONResponse(
+            {"error": f"{wanted} поставляется с ассистентом, удалять нельзя"},
+            status_code=403)
+    target = VOICES_DIR / wanted
+    if not (target / "voice.toml").exists():
+        return JSONResponse({"error": "нет такого голоса"}, status_code=404)
+    shutil.rmtree(target)
+    if PACK_ID == wanted:
+        PACK_ID = "jarvis-og-tts"
+    print(f"[pack] deleted voice {wanted}", flush=True)
+    return {"deleted": wanted, "current": PACK_ID, "packs": list_packs()}
+
+
 @app.get("/pack")
 def pack():
     """The voice pack: what is in it, what each clip says, how long it runs."""
@@ -1063,7 +1203,8 @@ def pack():
     return {
         "id": str(meta.get("id", "")),
         "name": str(meta.get("name", "")),
-        "dir": str(PACK_DIR),
+        "dir": str(_pack_dir()),
+        "packs": list_packs(),
         "lang": PACK_LANG,
         "rows": pack_rows(),
         "reference": Path(str(CFG.reference)).name,
@@ -1071,6 +1212,8 @@ def pack():
                   "secs": round(_slice_secs, 2)},
         "model": CFG.model_id,
         "loaded": _model is not None,
+        "kind": model_kind(),
+        "can_bake": model_kind() == "clone",
     }
 
 
@@ -1133,6 +1276,19 @@ def pack_bake(payload: dict = Body(...)):
         _set_line(doc, stem, sent)
         doc_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
+    # Said before the model is asked, not after it fails three times.
+    #
+    # These clips ARE the assistant's voice, and only the cloning models make a
+    # voice from the reference recording. Loading VoiceDesign and pressing
+    # record used to spend three attempts and half a minute to arrive at the
+    # same answer.
+    if model_kind() != "clone":
+        return JSONResponse(
+            {"error": "Заготовки начитываются клонирующей моделью — загруженная "
+                      "{} голос по образцу не делает. Выберите -Base на вкладке "
+                      "«Синтез».".format(CFG.model_id.split("/")[-1])},
+            status_code=409)
+
     knobs = knobs_from(payload)
     t0 = time.time()
     try:
@@ -1148,7 +1304,7 @@ def pack_bake(payload: dict = Body(...)):
 
     kept = None
     if wav_path.exists():
-        spare = PACK_DIR.parent / (PACK_DIR.name + "-previous") / PACK_LANG
+        spare = VOICES_DIR / (PACK_ID + "-previous") / PACK_LANG
         spare.mkdir(parents=True, exist_ok=True)
         kept = spare / (stem + ".wav")
         kept.write_bytes(wav_path.read_bytes())
@@ -1344,7 +1500,7 @@ button.danger:hover{border-color:var(--warn)}
 
 <div class="tabs">
   <button class="tab on" id="tab-tts" onclick="showTab('tts')">Синтез</button>
-  <button class="tab" id="tab-pack" onclick="showTab('pack')">Заготовки</button>
+  <button class="tab" id="tab-pack" onclick="showTab('pack')">Голоса</button>
   <button class="tab" id="tab-gpu" onclick="showTab('gpu')">Видеопамять</button>
 </div>
 
@@ -1450,6 +1606,23 @@ button.danger:hover{border-color:var(--warn)}
 </div><!-- /pane-tts -->
 
 <div id="pane-pack" style="display:none">
+  <div class="card">
+    <div class="row" style="margin-top:0">
+      <div style="flex:2"><label>Голос</label>
+        <select id="packpick" onchange="packSelect()"></select></div>
+      <div style="flex:1"><label>&nbsp;</label>
+        <button class="ghost" style="width:100%" onclick="newVoice()">Новый голос</button></div>
+      <div style="flex:1"><label>&nbsp;</label>
+        <button class="ghost" style="width:100%" onclick="dropVoice()">Удалить</button></div>
+    </div>
+    <div class="meta" id="packlist" style="margin-top:10px"></div>
+    <div class="meta" style="margin-top:9px">Новый голос заводится <b>по образцу существующего</b>:
+      берутся те же реакции и те же реплики, но ни одной записи — их надо начитать
+      кнопками ниже, тем эталоном, который стоит сейчас на вкладке «Синтез».
+      Так слова остаются прежними, а голос меняется. Появится в настройках Джарвиса
+      наравне с остальными.</div>
+  </div>
+
   <div class="card">
     <div class="bar" style="margin-top:0">
       <button class="ghost" onclick="packLoad()">Обновить</button>
@@ -1805,15 +1978,70 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c =>
 // Biggest first, because the question being asked is always "who is eating
 // the card". Clicking a heading again turns that column around.
 // ---------------------------------------------------------------- the pack
-let PACK=[], PACKSORT='', PACKDIR=1, BAKING=false, STOPBAKE=false
+let PACK=[], PACKSORT='', PACKDIR=1, BAKING=false, STOPBAKE=false, CANBAKE=true
+
+function packListDraw(packs, current){
+  const sel = $('packpick')
+  sel.innerHTML = packs.map(p =>
+    '<option value="'+esc(p.folder)+'"'+(p.folder===current?' selected':'')+'>'
+    + esc(p.name) + ' \u00b7 ' + p.clips + ' записей</option>').join('')
+  $('packlist').innerHTML = packs.map(p =>
+    '<div>' + (p.current ? '<b>' : '') + esc(p.name) + (p.current ? '</b>' : '')
+    + ' \u2014 <code>' + esc(p.folder) + '</code>, '
+    + p.clips + ' записей, ' + p.lines + ' реплик, языки: ' + esc(p.languages.join(', '))
+    + '</div>').join('')
+}
+
+async function packSelect(){
+  try{
+    await fetch('/voices/select',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:$('packpick').value})})
+  }catch(e){}
+  packLoad()
+}
+
+async function newVoice(){
+  const id = prompt('Имя папки для нового голоса (латиница, цифры, дефис):', 'jarvis-new')
+  if(!id) return
+  const name = prompt('Как показывать его в настройках Джарвиса:', id) || id
+  try{
+    const r = await fetch('/voices/new',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:id.trim(), name:name.trim()})})
+    const j = await r.json()
+    if(!r.ok){ packStatus(j.error || ('ошибка '+r.status), true); return }
+    packStatus('голос ' + j.created + ' заведён по образцу ' + j.from
+      + ' \u2014 записей пока нет, начитайте их кнопками ниже')
+  }catch(e){ packStatus('сайдкар не отвечает', true); return }
+  packLoad()
+}
+
+async function dropVoice(){
+  const id = $('packpick').value
+  if(!confirm('Удалить голос ' + id + ' вместе со всеми его записями? Это навсегда.')) return
+  try{
+    const r = await fetch('/voices/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:id})})
+    const j = await r.json()
+    if(!r.ok){ packStatus(j.error || ('ошибка '+r.status), true); return }
+    packStatus('голос ' + j.deleted + ' удалён')
+  }catch(e){ packStatus('сайдкар не отвечает', true); return }
+  packLoad()
+}
 
 async function packLoad(){
   try{
     const p = await (await fetch('/pack')).json()
+    if(p.packs) packListDraw(p.packs, p.id)
     PACK = p.rows
+    CANBAKE = p.can_bake !== false
     $('packmeta').textContent = p.name + ' · эталон ' + p.reference
       + ' ' + p.slice.secs + 's · ' + p.rows.length + ' клипов'
       + (p.loaded ? '' : ' · модель не в памяти, первая запись её загрузит')
+    if(!CANBAKE){
+      packStatus('Загружена ' + (p.model||'').split('/').pop()
+        + ' — она не клонирует голос по образцу, начитать заготовки ею нельзя. '
+        + 'Выберите модель -Base на вкладке «Синтез».', true)
+    }
     packDraw()
   }catch(e){ $('packmeta').textContent='сайдкар не отвечает' }
 }
@@ -1843,7 +2071,9 @@ function packDraw(){
       + '<td class="num">'+secs+'</td>'
       + '<td class="act">'
       + (r.exists ? '<button class="small ghost" onclick="packPlay('+i+')">▶</button> ' : '')
-      + '<button class="small ghost" onclick="packBake('+i+')">Записать</button>'
+      + '<button class="small ghost" onclick="packBake('+i+')"'
+      + (CANBAKE ? '' : ' disabled title="нужна клонирующая модель"')
+      + '>Записать</button>'
       + '</td></tr>'
   }).join('')
 }
@@ -1900,6 +2130,10 @@ async function packBake(i){
 
 async function bakeAll(){
   if(BAKING) return
+  if(!CANBAKE){
+    packStatus('Сначала загрузите клонирующую модель -Base на вкладке «Синтез».', true)
+    return
+  }
   if(!confirm('Перезаписать все ' + PACK.length + ' заготовок? Это займёт минуты. '
     + 'Прежние файлы сохранятся рядом с пакетом.')) return
   BAKING = true; STOPBAKE = false
