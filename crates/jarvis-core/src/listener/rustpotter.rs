@@ -101,14 +101,22 @@ pub fn data_callback(frame_buffer: &[i16]) -> Option<i32> {
         // one readable line per candidate: which model scored, how strongly,
         // and the gate it had to clear. near-misses stay at debug, so tuning
         // the threshold is a matter of reading the log rather than guessing
-        if detection.score > config::RUSPOTTER_MIN_SCORE {
+        // read per detection, not cached: a gate that only took effect
+        // after a restart would be tuned by guesswork again
+        let min = crate::DB
+            .get()
+            .map(|db| db.read().wake_min_score)
+            .unwrap_or(config::DEFAULT_WAKE_MIN_SCORE) as f32
+            / 100.0;
+
+        if detection.score > min {
             info!("Wake word: '{}' score {:.3} (min {:.2}) - DETECTED",
-                  detection.name, detection.score, config::RUSPOTTER_MIN_SCORE);
+                  detection.name, detection.score, min);
 
             return Some(0);
         } else {
             debug!("Wake word: '{}' score {:.3} (min {:.2}) - below threshold",
-                   detection.name, detection.score, config::RUSPOTTER_MIN_SCORE);
+                   detection.name, detection.score, min);
         }
     }
     None

@@ -98,6 +98,10 @@ pub struct Settings {
     #[serde(default = "default_llm_speak")]
     pub llm_speak: bool,
 
+    // how closely the wake word has to match, in hundredths
+    #[serde(default = "default_wake_min_score")]
+    pub wake_min_score: u32,
+
     // how loud counts as speech, and how long a pause ends a phrase
     #[serde(default = "default_vad_energy_threshold")]
     pub vad_energy_threshold: u32,
@@ -163,6 +167,7 @@ fn default_llm_thinking() -> String { config::DEFAULT_LLM_THINKING.to_string() }
 fn default_llm_system_prompt() -> String { config::DEFAULT_LLM_SYSTEM_PROMPT.to_string() }
 fn default_llm_allow_remote() -> bool { config::DEFAULT_LLM_ALLOW_REMOTE }
 fn default_llm_speak() -> bool { config::DEFAULT_LLM_SPEAK }
+fn default_wake_min_score() -> u32 { config::DEFAULT_WAKE_MIN_SCORE }
 fn default_vad_energy_threshold() -> u32 { config::DEFAULT_VAD_ENERGY_THRESHOLD }
 fn default_speech_pause_ms() -> u32 { config::DEFAULT_SPEECH_PAUSE_MS }
 fn default_duck_others() -> bool { config::DEFAULT_DUCK_OTHERS }
@@ -309,6 +314,7 @@ impl Settings {
             "llm_system_prompt"         => Some(self.llm_system_prompt.clone()),
             "llm_allow_remote"          => Some(self.llm_allow_remote.to_string()),
             "llm_speak"                 => Some(self.llm_speak.to_string()),
+            "wake_min_score"            => Some(self.wake_min_score.to_string()),
             "vad_energy_threshold"      => Some(self.vad_energy_threshold.to_string()),
             "speech_pause_ms"           => Some(self.speech_pause_ms.to_string()),
             "duck_others"               => Some(self.duck_others.to_string()),
@@ -486,6 +492,16 @@ impl Settings {
                     "t-one-ru" | "t-one" | "tone" => SpeechToTextEngine::TOne,
                     _ => return Err(format!("unknown speech-to-text engine: '{}'", val)),
                 };
+            }
+            "wake_min_score" => {
+                let n = val.parse::<u32>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                if !(config::WAKE_MIN_SCORE_MIN..=config::WAKE_MIN_SCORE_MAX).contains(&n) {
+                    return Err(format!("wake score must be {}-{}, got: '{}'",
+                                       config::WAKE_MIN_SCORE_MIN,
+                                       config::WAKE_MIN_SCORE_MAX, val));
+                }
+                self.wake_min_score = n;
             }
             "vad_energy_threshold" => {
                 let n = val.parse::<u32>()
@@ -751,6 +767,7 @@ impl Default for Settings {
             llm_system_prompt: config::DEFAULT_LLM_SYSTEM_PROMPT.to_string(),
             llm_allow_remote: config::DEFAULT_LLM_ALLOW_REMOTE,
             llm_speak: config::DEFAULT_LLM_SPEAK,
+            wake_min_score: config::DEFAULT_WAKE_MIN_SCORE,
             vad_energy_threshold: config::DEFAULT_VAD_ENERGY_THRESHOLD,
             speech_pause_ms: config::DEFAULT_SPEECH_PAUSE_MS,
             duck_others: config::DEFAULT_DUCK_OTHERS,

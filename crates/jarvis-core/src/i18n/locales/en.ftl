@@ -62,6 +62,8 @@ settings-voice-desc =
     Click to listen the preview of sound.
 settings-wake-word-engine = Wake word engine
 settings-wake-word-desc = Choose the engine for wake word recognition.
+settings-wake-score = Wake word strictness
+settings-wake-score-desc = How closely the wake word has to match. Tune it from the log rather than by feel: every attempt writes down the score it reached and the gate it had to clear. Lower answers more readily but also to other people talking; higher means calling twice, and the start of the command is lost with the first try. From 30 to 95, 62 by default. Applies to Rustpotter.
 settings-stt-engine = Speech recognition
 settings-intent-engine = Intent recognition
 settings-intent-engine-desc = Select neural network for command recognition.

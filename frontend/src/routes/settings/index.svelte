@@ -154,6 +154,7 @@
     let voiceVal = ""
     let selectedMicrophone = ""
     let selectedWakeWordEngine = ""
+    let wakeMinScore = 62
     let selectedIntentRecognitionEngine = ""
     let selectedSlotExtractionEngine = ""
     let selectedGlinerModel = ""
@@ -293,6 +294,7 @@
                     assistant_voice: voiceVal,
                     selected_microphone: selectedMicrophone,
                     selected_wake_word_engine: selectedWakeWordEngine,
+                    wake_min_score: wakeMinScore.toString(),
                     intent_backend: selectedIntentRecognitionEngine,
                     slots_backend: selectedSlotExtractionEngine,
                     selected_gliner_model: selectedGlinerModel,
@@ -444,7 +446,8 @@
                    followUpRaw, llmTtsInstructRaw,
                    llmHistoryRaw, llmHistoryTurnsRaw, llmHistoryIdleRaw,
                    duckOthersRaw, duckLevelRaw,
-                   sttEngineRaw, vadThresholdRaw, speechPauseRaw] = await Promise.all([
+                   sttEngineRaw, vadThresholdRaw, speechPauseRaw,
+                   wakeMinScoreRaw] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
                 invoke<string>("db_read", { key: "intent_backend" }),
@@ -481,11 +484,13 @@
                 invoke<string>("db_read", { key: "duck_level" }),
                 invoke<string>("db_read", { key: "speech_to_text_engine" }),
                 invoke<string>("db_read", { key: "vad_energy_threshold" }),
-                invoke<string>("db_read", { key: "speech_pause_ms" })
+                invoke<string>("db_read", { key: "speech_pause_ms" }),
+                invoke<string>("db_read", { key: "wake_min_score" })
             ])
 
             selectedMicrophone = mic
             selectedWakeWordEngine = wakeWord
+            wakeMinScore = parseInt(wakeMinScoreRaw) || 62
             selectedIntentRecognitionEngine = intentReco
             selectedSlotExtractionEngine = slotEngine
             selectedVoskModel = voskModel
@@ -707,6 +712,14 @@
             variant="filled"
             bind:value={selectedWakeWordEngine}
         />
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-wake-score')}>
+            <Text size="sm" color="gray">{t('settings-wake-score-desc')}</Text>
+            <Space h="xs" />
+            <NumberInput min={30} max={95} step={1} variant="filled" bind:value={wakeMinScore} />
+        </InputWrapper>
 
 
         <Space h="xl" />

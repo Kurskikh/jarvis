@@ -87,8 +87,19 @@ pub const APP_VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 pub const TRAY_ICON: &str = "32x32.png";
 pub const TRAY_TOOLTIP: &str = "Jarvis Voice Assistant";
 
-// RUSPOTTER
-pub const RUSPOTTER_MIN_SCORE: f32 = 0.62;
+// How closely the wake word has to match before the assistant answers.
+//
+// This sits on top of rustpotter's own threshold and is the gate that decides.
+// A setting rather than a constant because one number cannot be right for
+// every voice, microphone and room - measured here, a genuine "джарвис" scored
+// 0.616 against a gate of 0.62 and was missed by four thousandths, so it had
+// to be said twice and the start of the command was lost with the first try.
+//
+// Stored in hundredths because that is what a NumberInput can offer without
+// arguing about decimal separators; divided on the way out.
+pub const DEFAULT_WAKE_MIN_SCORE: u32 = 62;
+pub const WAKE_MIN_SCORE_MIN: u32 = 30;
+pub const WAKE_MIN_SCORE_MAX: u32 = 95;
 
 #[cfg(feature="jarvis_app")]
 pub const RUSTPOTTER_DEFAULT_CONFIG: Lazy<RustpotterConfig> = Lazy::new(|| {
