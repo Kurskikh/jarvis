@@ -1,0 +1,97 @@
+# Yandex Music.
+#
+# Transport (play, pause, next, previous) goes through the app's own system
+# media session, so it works with the window minimised or behind a game and
+# never touches a browser tab that happens to be playing.
+#
+# There is nothing here for like, dislike, shuffle or repeat. They exist only
+# as the app's own window hotkeys, and this app does not accept synthesised
+# keys at all - measured with the W key, which resizes the window when it
+# lands and never did. A command that answers "done" and changes nothing is
+# worse than no command.
+#
+# Starting from cold is the one case the session cannot serve, because it does
+# not exist until the first note. There the script clicks the play button - it
+# finds it by looking for the yellow disc in the transport strip rather than
+# assuming a position - and then verifies that a session appeared. Clicks do
+# reach this window even though keystrokes do not. That costs a moment of
+# stolen focus, so it happens only when nothing is playing; every command after
+# it goes through the session and leaves the window alone.
+
+[[commands]]
+id = "music_play_pause"
+type = "ahk"
+exe_path = "ahk/Play pause.ahk"
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "пауза",
+    "поставь на паузу",
+    "музыку на паузу",
+    "останови воспроизведение",
+    "продолжи воспроизведение",
+    "продолжи трек",
+    "сними с паузы",
+]
+
+
+[[commands]]
+id = "music_next"
+type = "ahk"
+exe_path = "ahk/Next track.ahk"
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "следующий трек",
+    "следующая песня",
+    "переключи трек",
+    "переключи песню",
+    "другой трек",
+    "мне не нравится этот трек",
+]
+
+
+[[commands]]
+id = "music_previous"
+type = "ahk"
+exe_path = "ahk/Previous track.ahk"
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "предыдущий трек",
+    "предыдущая песня",
+    "верни трек",
+    "верни песню",
+    "включи заново",
+    "трек назад",
+]
+
+
+[[commands]]
+id = "music_open"
+type = "ahk"
+exe_path = "ahk/Open music.ahk"
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "включи музыку",
+    "открой музыку",
+    "запусти музыку",
+    "открой яндекс музыку",
+    "запусти яндекс музыку",
+    "хочу послушать музыку",
+]
+
+
+[[commands]]
+id = "music_close"
+type = "ahk"
+exe_path = "ahk/Close music.ahk"
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "выключи музыку",
+    "закрой музыку",
+    "закрой яндекс музыку",
+    "хватит музыки",
+]
