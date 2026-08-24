@@ -1261,7 +1261,7 @@ button.danger:hover{border-color:var(--warn)}
   </div>
   <div class="row" style="margin-top:11px">
     <div><label>Язык</label><select id="language" onchange="saveVoice()"></select></div>
-    <div id="speakerbox" style="display:none"><label>Встроенный голос</label>
+    <div id="speakerbox"><label>Встроенный голос</label>
       <select id="speaker" onchange="saveVoice()"></select></div>
   </div>
   <div class="meta" id="langnote" style="margin-top:8px"></div>
@@ -1401,14 +1401,26 @@ let KIND='clone'
 function applyKind(h){
   KIND = h.kind || 'clone'
   const names = h.speakers || []
-  const box = $('speakerbox')
-  box.style.display = (KIND==='custom' && names.length) ? '' : 'none'
+  const sel = $('speaker')
+
+  // Shown always, even when it cannot be used.
+  //
+  // It used to hide itself whenever the loaded model had no built-in voices,
+  // which is most of the time - and a control that is simply absent is
+  // indistinguishable from one that was never built. Better to stand there
+  // greyed out and say which model would give it something to offer.
   if(KIND==='custom' && names.length){
-    const sel = $('speaker')
-    if(sel.options.length !== names.length){
+    sel.disabled = false
+    if(sel.options.length !== names.length || sel.options[0].disabled){
       sel.innerHTML = names.map(n => '<option value="'+esc(n)+'">'+esc(n)+'</option>').join('')
     }
     if(h.speaker) sel.value = h.speaker
+  }else{
+    sel.disabled = true
+    sel.innerHTML = '<option disabled selected>' +
+      (KIND==='design' ? 'VoiceDesign строит голос по описанию'
+                       : 'эта модель клонирует голос с образца')
+      + '</option>'
   }
   const note = $('instructnote')
   if(KIND==='design'){
@@ -1424,9 +1436,16 @@ function applyKind(h){
     note.textContent = 'Модель часто зачитывает инструкцию вслух вместо того, чтобы ей следовать. '
       + 'Проверено на русском, английском и китайском: надёжно работает только пустое поле.'
   }
-  $('langnote').textContent = ($('language').value === 'Auto')
-    ? 'Язык определяется по тексту. Полезно, когда в ответе попадаются английские слова.'
-    : 'Текст читается как выбранный язык, что бы в нём ни было написано.'
+  const lang = ($('language').value === 'Auto')
+    ? 'Язык определяется по тексту — полезно, когда в ответе попадаются английские слова. '
+    : 'Текст читается как выбранный язык, что бы в нём ни было написано. '
+  const voice = (KIND==='custom')
+    ? 'Голос выбирается из девяти встроенных.'
+    : (KIND==='design')
+      ? 'Голос задаётся описанием в поле инструкции ниже.'
+      : 'Встроенных голосов у этой модели нет — она клонирует голос с образца записи. '
+        + 'Девять готовых голосов появятся, если загрузить ниже модель CustomVoice.'
+  $('langnote').textContent = lang + voice
 }
 
 async function saveVoice(){
