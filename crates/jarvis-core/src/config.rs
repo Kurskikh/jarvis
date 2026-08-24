@@ -137,12 +137,12 @@ pub const RUSTPOTTER_DEFAULT_CONFIG: Lazy<RustpotterConfig> = Lazy::new(|| {
 
 // COMMANDS
 pub const COMMANDS_PATH: &str = "resources/commands/";
-pub const RUSTPOTTER_PATH: &str = "resources/rustpotter/";
+pub const RUSTPOTTER_PATH: &str = "models/app/rustpotter/";
 
 // VOSK
 // pub const VOSK_MODEL_PATH: &str = const_concat!(PUBLIC_PATH, "/vosk/model_small");
-pub const VOSK_MODELS_PATH: &str = "resources/vosk";
-pub const VOSK_MODEL_PATH: &str = "resources/vosk/model_small";
+pub const VOSK_MODELS_PATH: &str = "models/app/vosk";
+pub const VOSK_MODEL_PATH: &str = "models/app/vosk/model_small";
 pub const VOSK_FETCH_PHRASE: &str = "джарвис";
 pub const VOSK_MIN_RATIO: f64 = 70.0;
 

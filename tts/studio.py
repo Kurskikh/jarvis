@@ -16,14 +16,18 @@ import threading
 from pathlib import Path
 
 HERE = Path(__file__).parent
+# Model caches live with every other model, one folder up. Set before any
+# huggingface import: these are read once, at import time, and a late change
+# has no effect at all.
+CACHE = HERE.parent / "models" / "sidecar"
 COSY = HERE / "CosyVoice"
 MODEL_DIR = HERE / "models" / "Fun-CosyVoice3-0.5B"
 SAMPLES = [HERE / "xamples", HERE / "examples", HERE]
 OUT_DIR = HERE / "studio_out"
 OUT_DIR.mkdir(exist_ok=True)
 
-os.environ.setdefault("HF_HOME", str(HERE / "hf"))
-os.environ.setdefault("MODELSCOPE_CACHE", str(HERE / "modelscope"))
+os.environ.setdefault("HF_HOME", str(CACHE / "hf"))
+os.environ.setdefault("MODELSCOPE_CACHE", str(CACHE / "modelscope"))
 
 import numpy as np
 import soundfile as sf

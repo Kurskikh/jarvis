@@ -37,9 +37,9 @@
     "resources": {
       "../../resources/commands": "resources/commands",
       "../../resources/sound": "resources/sound",
-      "../../resources/rustpotter": "resources/rustpotter",
-      "../../resources/vosk": "resources/vosk",
-      "../../resources/models": "resources/models"
+      "../../models/app/rustpotter": "models/app/rustpotter",
+      "../../models/app/vosk": "models/app/vosk",
+      "../../models/app/catalog": "models/app/catalog"
     }
   }
 }

@@ -46,7 +46,7 @@ pub fn scan_models(models_dir: &Path) -> ScanResult {
         match load_model_def(&toml_path, &path) {
             Ok(mut def) => {
                 // a descriptor is not a model. model.toml is the only file in
-                // resources/models that is version controlled, so a fresh clone
+                // models/app/catalog that is version controlled, so a fresh clone
                 // (or a partial download) has descriptors whose weights are
                 // missing. keep only the tasks whose loader can actually run,
                 // otherwise the id would be offered in the UI, pass validation,

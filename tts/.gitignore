@@ -1,4 +1,4 @@
-# Everything heavy, generated, or personal stays out of the repository. What is
+﻿# Everything heavy, generated, or personal stays out of the repository. What is
 # tracked here is the source of the speech sidecar and the tools around it -
 # about 140 KB. The working directory it runs in is tens of gigabytes.
 
@@ -10,10 +10,9 @@ venv-qwen/
 .uvcache/
 __pycache__/
 
-# Model weights and the caches they are downloaded into.
-hf/
-models/
-modelscope/
+# Model weights are no longer here at all: every model in the project lives
+# under models/ at the root, and the caches these scripts fill are
+# models/sidecar. Ignored there, not here.
 
 # CosyVoice is a separate project with its own licence. It is cloned next to
 # these scripts, never vendored into this repository.
@@ -30,10 +29,9 @@ examples/
 ref_og.wav
 reference_text*.txt
 
-# Generated speech: baked voice packs, studio takes, probe output.
-pack/
-pack-*/
-studio_out/
+# Generated speech: baked voice packs, studio takes, probe output. All of it
+# now under out/, so there is one place to look and one place to empty.
+out/
 *.wav
 
 # Runtime state. Written by the sidecar's own console and full of absolute

@@ -14,10 +14,14 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
+# Model caches live with every other model, one folder up. Set before any
+# huggingface import: these are read once, at import time, and a late change
+# has no effect at all.
+CACHE = HERE.parent / "models" / "sidecar"
 COSY = HERE / "CosyVoice"
 
-os.environ.setdefault("HF_HOME", str(HERE / "hf"))
-os.environ.setdefault("MODELSCOPE_CACHE", str(HERE / "modelscope"))
+os.environ.setdefault("HF_HOME", str(CACHE / "hf"))
+os.environ.setdefault("MODELSCOPE_CACHE", str(CACHE / "modelscope"))
 
 # torchaudio 2.11 routes audio IO through TorchCodec, which needs system FFmpeg.
 # soundfile is already a dependency and carries libsndfile with it.

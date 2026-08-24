@@ -55,7 +55,17 @@ tree.txt
 # The middle two lines are required: the first line excludes the model
 # directories themselves, and git cannot re-include a file whose parent
 # directory is excluded, so the directories have to be re-included first.
-/resources/models/*
-!/resources/models/*/
-/resources/models/*/*
-!/resources/models/*/model.toml
+# models/app ships with a release; models/sidecar is cache the Python
+# sidecars download on first run - tens of gigabytes that must never be
+# tracked and never be copied into a build.
+/models/sidecar/
+/models/app/catalog/*
+!/models/app/catalog/*/
+/models/app/catalog/*/*
+!/models/app/catalog/*/model.toml
+# These two came with the repository before the move and still do. The intent
+# classifier has no other way to exist in a fresh clone - it is not downloaded
+# on demand the way the speech models are, and without the weights the
+# assistant matches no commands at all.
+!/models/app/catalog/all-MiniLM-L6-v2/*
+!/models/app/catalog/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q/*

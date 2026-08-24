@@ -13,11 +13,11 @@ import filecmp
 # format: (source, destination_name)
 SOURCE = (
     ("resources/commands/", "resources/commands/"),
-    ("resources/vosk/", "resources/vosk/"),
+    ("models/app/vosk/", "models/app/vosk/"),
     ("resources/lib/", "lib/"),
-    ("resources/rustpotter/", "resources/rustpotter/"),
+    ("models/app/rustpotter/", "models/app/rustpotter/"),
     ("resources/sound/", "resources/sound/"),
-    ("resources/models/", "resources/models/"),
+    ("models/app/catalog/", "models/app/catalog/"),
 
     # vosk
     ("lib/windows/amd64/libgcc_s_seh-1.dll", None),

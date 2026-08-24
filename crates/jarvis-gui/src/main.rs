@@ -26,7 +26,7 @@ fn main() {
     // init settings
     let manager = db::init();
 
-    // init models registry (scans resources/models for model.toml descriptors).
+    // init models registry (scans models/app/catalog for model.toml descriptors).
     // must run before any command that touches models::get_options
     if let Err(e) = models::init() {
         warn!("Models registry init failed: {}", e);

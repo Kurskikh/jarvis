@@ -22,7 +22,11 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
-os.environ.setdefault("HF_HOME", str(HERE / "hf"))
+# Model caches live with every other model, one folder up. Set before any
+# huggingface import: these are read once, at import time, and a late change
+# has no effect at all.
+CACHE = HERE.parent / "models" / "sidecar"
+os.environ.setdefault("HF_HOME", str(CACHE / "hf"))
 
 import gc
 
@@ -158,7 +162,17 @@ def transcribe(path):
     cache = transcript_cache(path, HERE)
     if cache.exists():
         return cache.read_text(encoding="utf-8").strip()
-    import whisper
+    try:
+        import whisper
+    except ModuleNotFoundError:
+        raise SystemExit(
+            "The reference transcript is missing and whisper is not installed "
+            "here, so it cannot be made. "
+            f"Expected it at: {cache}. "
+            "Put the text there by hand, or pass --prompt-text. "
+            "That cache file is NOT disposable: deleting it takes the sidecar "
+            "down until whisper is available or the text is restored."
+        )
     w = whisper.load_model("small")
     text = w.transcribe(str(path), language="ru")["text"].strip()
     del w
@@ -509,7 +523,7 @@ def api_reference(body: dict = Body(...)):
 
     global _slice_path, _slice_secs, _prompt_text
     with _lock:
-        out = HERE / "studio_out" / "_sidecar_qwen_ref.wav"
+        out = HERE / "out" / "_sidecar_qwen_ref.wav"
         path, secs = refslice.slice_reference(ref, start, length, out, do_snap=snap)
         cache = transcript_cache(path, HERE)
         if cache.exists():
@@ -961,7 +975,7 @@ def main():
             print(f"saved reference {saved_path} is gone, using the command line",
                   flush=True)
 
-    out = HERE / "studio_out" / "_sidecar_qwen_ref.wav"
+    out = HERE / "out" / "_sidecar_qwen_ref.wav"
     out.parent.mkdir(exist_ok=True)
     _slice_path, _slice_secs = refslice.slice_reference(
         a.reference, a.start, a.length, out, do_snap=a.snap)

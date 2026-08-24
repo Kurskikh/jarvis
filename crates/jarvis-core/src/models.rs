@@ -32,7 +32,11 @@ use once_cell::sync::OnceCell;
 
 use crate::APP_DIR;
 
-pub const MODELS_PATH: &str = "resources/models";
+// Every model the assistant loads lives under models/. The split inside is
+// by fate, not by kind: models/app ships with a release, models/sidecar is
+// gigabytes of cache the Python sidecars download and must never be copied
+// anywhere. Keeping that visible in the path is cheaper than remembering it.
+pub const MODELS_PATH: &str = "models/app/catalog";
 
 static REGISTRY: OnceCell<ModelRegistry> = OnceCell::new();
 
