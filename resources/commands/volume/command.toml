@@ -1,14 +1,29 @@
+# Volume.
+#
+# Two kinds of command on purpose. "Louder" and "quieter" step by ten, because
+# that is what a person means by them - they are adjusting, not choosing a
+# number. "Volume to minimum" and its like jump to a fixed level, because that
+# is a destination.
+#
+# Muting is set, never toggled. Both mute commands used to run one script that
+# sent {Volume_Mute}, so "turn the sound off" on an already-muted machine
+# turned it back on - the two commands were the same command wearing two names.
+
 [[commands]]
 id = "volume_mute"
 type = "ahk"
-exe_path = "ahk/Mute volume.ahk"
+exe_path = "ahk/Set mute.ahk"
+exe_args = ["1"]
 sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
 
 phrases.ru = [
     "выключи звук",
+    "без звука",
     "беззвучный режим",
     "режим без звука",
     "отключи звук",
+    "приглуши звук",
+    "тишина",
 ]
 
 
@@ -16,13 +31,56 @@ phrases.ru = [
 [[commands]]
 id = "volume_unmute"
 type = "ahk"
-exe_path = "ahk/Mute volume.ahk"
+exe_path = "ahk/Set mute.ahk"
+exe_args = ["0"]
 sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
 
 phrases.ru = [
     "включи звук",
     "режим со звуком",
     "верни звук",
+    "со звуком",
+]
+
+
+
+# SoundSet takes a signed value as a relative adjustment, so the step pair
+# needs no script of its own - measured: 18.9 -> 28.9 -> 18.9.
+[[commands]]
+id = "volume_up"
+type = "ahk"
+exe_path = "ahk/Set sound.ahk"
+exe_args = ["+10"]
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "громче",
+    "погромче",
+    "сделай громче",
+    "сделай погромче",
+    "прибавь звук",
+    "прибавь громкость",
+    "добавь звук",
+    "звук громче",
+]
+
+
+
+[[commands]]
+id = "volume_down"
+type = "ahk"
+exe_path = "ahk/Set sound.ahk"
+exe_args = ["-10"]
+sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
+
+phrases.ru = [
+    "тише",
+    "потише",
+    "сделай тише",
+    "сделай потише",
+    "убавь звук",
+    "убавь громкость",
+    "звук тише",
 ]
 
 
@@ -37,9 +95,6 @@ sounds.ru = ["ok1", "ok2", "ok3", "ok4"]
 phrases.ru = [
     "звук на минимум",
     "громкость на минимум",
-    "убавь звук",
-    "сделай потише",
-    "убавь громоксть",
     "поставь звук на минимум",
     "поставь громкость на минимум",
     "установи звук на минимум",
