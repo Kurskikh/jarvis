@@ -92,6 +92,18 @@ pub fn default_backend(task: Task) -> &'static str {
     catalog::default_backend(task)
 }
 
+// where a catalogued model's files live, by its id.
+//
+// None when the registry is not initialized in this process, or when the model
+// is not usably on disk. The id is what settings store; the directory name is
+// only a convention, and a loader that joins the path by hand instead of
+// asking here breaks the day the two disagree.
+pub fn model_dir(id: &str) -> Option<std::path::PathBuf> {
+    try_registry()?.with_catalog(|models| {
+        models.iter().find(|m| m.id == id).map(|m| m.path.clone())
+    })
+}
+
 // tri-state validation, for write paths that run in processes which may or
 // may not be able to judge the id.
 //   Some(true)  -> id is valid for the task

@@ -82,8 +82,9 @@ pub fn scan_models(models_dir: &Path) -> ScanResult {
 }
 
 // files each loader reads, relative to the model directory.
-// KEEP IN SYNC with models/loaders/*.rs - this is what makes catalog
-// membership imply loadability.
+// KEEP IN SYNC with the loader each arm names - models/loaders/*.rs for
+// intent and slots, stt/tone.rs for stt, audio_processing/vad/silero.rs for
+// vad. This is what makes catalog membership imply loadability.
 fn task_files_present(task: Task, model_dir: &Path) -> bool {
     match task {
         // loaders/embedding.rs
@@ -113,8 +114,11 @@ fn task_files_present(task: Task, model_dir: &Path) -> bool {
             model_dir.join("model.onnx").is_file() && model_dir.join("tokens.txt").is_file()
         }
 
-        // no descriptor-driven backends for these yet; nothing to verify
-        Task::Vad | Task::NoiseSuppression => true,
+        // audio_processing/vad/silero.rs hands this file to sherpa-onnx
+        Task::Vad => model_dir.join("model.onnx").is_file(),
+
+        // no descriptor-driven backends for this yet; nothing to verify
+        Task::NoiseSuppression => true,
     }
 }
 
@@ -257,4 +261,41 @@ pub fn is_valid_backend(task: Task, backend_id: &str, models: &[ModelDef]) -> bo
     }
 
     models.iter().any(|m| m.id == backend_id && m.tasks.contains(&task))
+}
+
+#[cfg(test)]
+mod vad_descriptor_tests {
+    use super::{task_files_present, Task};
+
+    fn empty_model_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("jarvis-catalog-tests").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // A descriptor is not a model. Until this check existed for VAD, a
+    // silero-vad folder holding nothing but model.toml was offered in the
+    // dropdown, passed validation, and then failed at startup - the exact
+    // failure mode the Stt arm above was written to prevent.
+    #[test]
+    fn a_vad_model_without_its_weights_is_not_offered() {
+        let dir = empty_model_dir("vad-no-weights");
+        assert!(!task_files_present(Task::Vad, &dir));
+    }
+
+    #[test]
+    fn a_vad_model_with_its_weights_is_offered() {
+        let dir = empty_model_dir("vad-with-weights");
+        std::fs::write(dir.join("model.onnx"), b"not really a model").unwrap();
+        assert!(task_files_present(Task::Vad, &dir));
+    }
+
+    // Noise suppression still has no descriptor-driven backends; a descriptor
+    // declaring it must keep working exactly as before.
+    #[test]
+    fn noise_suppression_stays_unverified() {
+        let dir = empty_model_dir("ns-nothing");
+        assert!(task_files_present(Task::NoiseSuppression, &dir));
+    }
 }
