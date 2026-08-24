@@ -107,10 +107,20 @@ impl fmt::Display for LlmError {
                  the server's own log. The next utterance tries again.{}",
                 endpoint, status, said(server_message)),
 
+            // Three causes, in the order they bite. The reasoning one is the
+            // last people guess and the easiest to hit: the model answers
+            // perfectly well, spends a few hundred tokens thinking first, and
+            // the turn is abandoned before a word of the answer exists. A
+            // large llm_max_tokens next to a small llm_timeout is that trap
+            // written into the settings - the budget says think as long as you
+            // like, the clock says one minute.
             LlmError::Timeout { endpoint, secs } => write!(f,
-                "The LLM at {} did not answer within {}s. A model loading for the first time \
-                 is far slower than a warm one - preload it in LM Studio, or raise the \
-                 'llm_timeout' setting key (seconds, {}-{}).",
+                "The LLM at {} did not answer within {}s. Three things cause this: a model \
+                 loading for the first time is far slower than a warm one, so preload it; a \
+                 reasoning model spends its token budget thinking before it writes anything, \
+                 so either turn thinking off or allow it the time; and a large \
+                 'llm_max_tokens' beside a small 'llm_timeout' promises a long answer and \
+                 then refuses to wait for it. The clock is 'llm_timeout' (seconds, {}-{}).",
                 endpoint, secs, config::LLM_TIMEOUT_MIN, config::LLM_TIMEOUT_MAX),
 
             LlmError::Truncated { endpoint, max_tokens, completion_tokens } => write!(f,
