@@ -125,8 +125,16 @@ def vram():
     if not torch.cuda.is_available():
         return None
     free, total = torch.cuda.mem_get_info()
-    return {"free_mb": round(free / 2**20), "total_mb": round(total / 2**20),
-            "used_by_us_mb": round(torch.cuda.memory_allocated() / 2**20)}
+    # same shape as the Qwen sidecar: the launcher reads both, and two
+    # spellings of one idea is how one of them goes stale
+    mb = lambda b: round(b / 2**20)
+    return {
+        "card_total_mb": mb(total),
+        "card_free_mb": mb(free),
+        "card_used_mb": mb(total - free),
+        "ours_live_mb": mb(torch.cuda.memory_allocated()),
+        "ours_held_mb": mb(torch.cuda.memory_reserved()),
+    }
 
 
 def transcribe(path):

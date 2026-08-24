@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Run the speech sidecar Jarvis talks to.
 
@@ -93,7 +93,12 @@ function Show-Status {
             Write-Host ("   {0,-11} port {1}  not running" -f $e.Name, $e.Port) -ForegroundColor DarkGray
             continue
         }
-        $mem = if ($h.vram) { "free {0} of {1} MB" -f $h.vram.free_mb, $h.vram.total_mb } else { '' }
+        # what THIS sidecar holds, then what the card has left. The first is
+        # the number that matters when something else wants the card, and it
+        # was the one not being shown.
+        $mem = if ($h.vram) {
+            "holds {0} MB, card free {1} of {2}" -f $h.vram.ours_held_mb, $h.vram.card_free_mb, $h.vram.card_total_mb
+        } else { '' }
         $state = if ($h.ok) { 'model in memory' } else { 'model unloaded' }
         Write-Host ("   {0,-11} port {1}  {2}   {3}" -f $e.Name, $e.Port, $state, $mem) -ForegroundColor Green
     }
@@ -125,7 +130,7 @@ if ($Unload -or $Reload) {
         $any = $true
         try {
             $r = Invoke-RestMethod -Uri "http://127.0.0.1:$($e.Port)/$verb" -Method Post -TimeoutSec 120
-            $free = if ($r.vram) { "{0} MB free" -f $r.vram.free_mb } else { 'done' }
+            $free = if ($r.vram) { "{0} MB free on the card" -f $r.vram.card_free_mb } else { 'done' }
             Write-Host ("   {0,-11} {1}" -f $e.Name, $free) -ForegroundColor Green
         } catch { Note ("{0}: {1}" -f $e.Name, $_.Exception.Message) }
     }

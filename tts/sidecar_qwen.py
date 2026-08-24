@@ -44,6 +44,9 @@ app = FastAPI()
 CFG = None
 _model = None
 _lock = threading.Lock()      # one GPU, one generation at a time
+# separate from _lock and re-entrant: loading is called from inside paths
+# that already hold _lock, and from request threads that do not
+_load_lock = threading.RLock()
 _slice_path = None
 _slice_secs = 0.0
 _prompt_text = ""
@@ -52,6 +55,21 @@ _stats = {"requests": 0, "retakes": 0, "failures": 0}
 
 
 def model():
+    """
+    The one model. There is never a second.
+
+    Guarded because it was not: two requests arriving before the first load
+    finished would both see None and both call from_pretrained, and the card
+    would hold two copies while the variable pointed at one. The lock is
+    re-entrant so the paths that already hold it - the swap, the warm-up - can
+    call this without deadlocking.
+    """
+    global _model
+    with _load_lock:
+        return _load_locked()
+
+
+def _load_locked():
     global _model
     if _model is None:
         # faster-qwen3-tts rather than the plain qwen-tts package. Two reasons,
@@ -91,9 +109,13 @@ def unload():
     Whichever is idle should be the one to let go.
     """
     global _model
-    if _model is None:
-        return False
-    _model = None
+    # the same lock the load takes: dropping the model while another thread is
+    # halfway through creating one would leave the new copy unreferenced and
+    # the card holding it anyway
+    with _load_lock:
+        if _model is None:
+            return False
+        _model = None
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -103,11 +125,33 @@ def unload():
 
 
 def vram():
+    """
+    Four numbers, because two of them were being read as one.
+
+    "used_by_us" used to mean memory_allocated(), which counts live tensors and
+    nothing else. PyTorch keeps a much larger pool reserved and hands none of it
+    back to the driver, so that figure read as a few gigabytes while the card
+    was full - and the card's own "free" disagreed with nvidia-smi by about a
+    gigabyte for the same reason. Neither was wrong; they answer different
+    questions, and only one of them was on screen.
+
+    So: what the card says, and what this process holds, separately - and for
+    this process both the live tensors and the pool they came out of.
+    """
     if not torch.cuda.is_available():
         return None
     free, total = torch.cuda.mem_get_info()
-    return {"free_mb": round(free / 2**20), "total_mb": round(total / 2**20),
-            "used_by_us_mb": round(torch.cuda.memory_allocated() / 2**20)}
+    mb = lambda b: round(b / 2**20)
+    return {
+        "card_total_mb": mb(total),
+        "card_free_mb": mb(free),
+        "card_used_mb": mb(total - free),
+        # live tensors
+        "ours_live_mb": mb(torch.cuda.memory_allocated()),
+        # everything torch has taken from the driver and not given back. This
+        # is the number that matters when something else wants the card.
+        "ours_held_mb": mb(torch.cuda.memory_reserved()),
+    }
 
 
 def transcribe(path):
@@ -701,7 +745,7 @@ async function refresh(){
     const h=await (await fetch('/health')).json()
     const v=h.vram||{}
     $('vram').textContent=(h.ok?'в памяти':'выгружена')
-      +(v.free_mb?(' \u00b7 свободно '+v.free_mb+' из '+v.total_mb+' МБ'):'')
+      +(v.card_free_mb?(' · держим '+v.ours_held_mb+' МБ, на карте свободно '+v.card_free_mb+' из '+v.card_total_mb):'')
     $('banner').textContent=h.model+' \u00b7 эталон '+h.slice.secs+'s \u00b7 '+(h.sample_rate||'?')+' Гц'
   }catch(e){ $('vram').textContent='сайдкар не отвечает' }
 }
