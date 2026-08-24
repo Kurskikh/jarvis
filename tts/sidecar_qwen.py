@@ -77,6 +77,46 @@ def model():
         return _load_locked()
 
 
+# What the loader is doing, for a page that would otherwise show nothing.
+#
+# Loading takes the better part of a minute, and the first time a model is
+# chosen it is several gigabytes off the network. The button used to block on
+# all of that with no sign of life - and worse, the five-second refresh wiped
+# the one "..." that marked it, so pressing "Загрузить в память" looked exactly
+# like pressing nothing at all.
+LOAD = {"busy": False, "phase": "", "started": 0.0, "model": "",
+        "error": "", "bytes": 0, "took": 0.0}
+
+
+def _cache_bytes(model_id):
+    """
+    How much of this model is on disk, for the first-run download.
+
+    There is no percentage to be had - nothing tells us the total before it
+    arrives - but a number that climbs is the difference between waiting and
+    wondering whether it hung.
+    """
+    folder = "models--" + model_id.replace("/", "--")
+    root = Path(os.environ.get("HF_HOME", "")) / "hub" / folder
+    if not root.exists():
+        return 0
+    total = 0
+    for p in root.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _watch_download(model_id, stop):
+    """Report the growing cache while from_pretrained is fetching."""
+    while not stop.is_set():
+        LOAD["bytes"] = _cache_bytes(model_id)
+        stop.wait(1.5)
+
+
 def _load_locked():
     global _model
     if _model is None:
@@ -93,18 +133,38 @@ def _load_locked():
         # a hundred characters - and no "thinking" clip covers that.
         from faster_qwen3_tts import FasterQwen3TTS
         t0 = time.time()
-        _model = FasterQwen3TTS.from_pretrained(
-            CFG.model_id,
-            device="cuda" if torch.cuda.is_available() else "cpu",
-            dtype=torch.bfloat16,
-            attn_implementation="sdpa",
-        )
+
+        cached = _cache_bytes(CFG.model_id)
+        LOAD.update(busy=True, model=CFG.model_id, started=t0, error="",
+                    bytes=cached,
+                    phase="скачиваю веса" if cached < 100 * 2**20 else "читаю веса")
+        stop = threading.Event()
+        watcher = threading.Thread(target=_watch_download, args=(CFG.model_id, stop),
+                                   daemon=True)
+        watcher.start()
+        try:
+            _model = FasterQwen3TTS.from_pretrained(
+                CFG.model_id,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                dtype=torch.bfloat16,
+                attn_implementation="sdpa",
+            )
+        except Exception as e:
+            LOAD.update(busy=False, phase="", error=f"{type(e).__name__}: {e}")
+            raise
+        finally:
+            stop.set()
+
+        LOAD["phase"] = "прогреваю"
         try:
             _model.warmup()
         except Exception as e:
             # not fatal: it only costs the first request some extra latency
             print(f"warmup skipped: {e}", flush=True)
-        print(f"model loaded in {time.time()-t0:.1f}s", flush=True)
+
+        took = time.time() - t0
+        LOAD.update(busy=False, phase="", took=round(took, 1))
+        print(f"model loaded in {took:.1f}s", flush=True)
     return _model
 
 
@@ -701,6 +761,15 @@ def health():
         "chunk_size": DEFAULTS.get("chunk_size", CFG.chunk_size),
         "language": CFG.language,
         "languages": SUPPORTED_LANGUAGES,
+        "loading": {
+            "busy": LOAD["busy"],
+            "phase": LOAD["phase"],
+            "model": LOAD["model"],
+            "elapsed": round(time.time() - LOAD["started"], 1) if LOAD["busy"] else 0,
+            "mb": round(LOAD["bytes"] / 2**20) if LOAD["busy"] else 0,
+            "error": LOAD["error"],
+            "took": LOAD["took"],
+        },
         "kind": model_kind(),
         "speaker": getattr(CFG, "speaker", ""),
         "speakers": model_speakers(),
@@ -933,33 +1002,43 @@ def api_model(body: dict = Body(...)):
     if wanted == CFG.model_id and _model is not None:
         return {"model": wanted, "changed": False, "vram": vram()}
 
+    if LOAD["busy"]:
+        return JSONResponse({"error": "модель уже грузится"}, status_code=409)
+
     previous = CFG.model_id
-    with _lock:
-        unload()
-        CFG.model_id = wanted
-        t0 = time.time()
-        try:
-            model()
-        except Exception as e:
-            CFG.model_id = previous
-            print(f"could not load {wanted}: {e}", flush=True)
-            return JSONResponse(
-                {"error": f"{type(e).__name__}: {e}", "model": previous},
-                status_code=400)
-        took = time.time() - t0
-        save_config()
 
-        # warm the cloning path, same reason as at startup
-        try:
-            for _ in synth_stream("Готово."):
-                pass
-        except Exception as e:
-            print(f"warm-up after the swap failed: {e}", flush=True)
+    def run():
+        with _lock:
+            unload()
+            CFG.model_id = wanted
+            try:
+                model()
+            except Exception as e:
+                CFG.model_id = previous
+                LOAD.update(busy=False, phase="",
+                            error=f"не загрузилась {wanted}: {e}")
+                print(f"could not load {wanted}: {e}", flush=True)
+                return
+            save_config()
 
-    known = next((m for m in KNOWN_MODELS if m["id"] == wanted), None)
-    print(f"model is now {wanted} (loaded in {took:.1f}s)", flush=True)
-    return {"model": wanted, "changed": True, "took_secs": round(took, 1),
-            "clones": known["clones"] if known else None, "vram": vram()}
+            # warm the path that will actually be used, same reason as at
+            # startup - but only for the cloning models, since it is the
+            # cloning path that carries the cost
+            if model_kind() == "clone":
+                LOAD["busy"], LOAD["phase"] = True, "прогреваю голос"
+                try:
+                    for _ in synth_stream("Готово."):
+                        pass
+                except Exception as e:
+                    print(f"warm-up after the swap failed: {e}", flush=True)
+                LOAD["busy"], LOAD["phase"] = False, ""
+            print(f"model is now {wanted}", flush=True)
+
+    # Answered at once, followed through /health. A model swap is a fresh load
+    # of several gigabytes; holding the request open for it is how the console
+    # ended up with nothing to show.
+    threading.Thread(target=run, daemon=True).start()
+    return {"model": wanted, "started": True}
 
 
 @app.get("/pack")
@@ -1157,11 +1236,28 @@ def api_unload():
 
 @app.post("/reload")
 def api_reload():
-    """Load it back without waiting for a question to pay the cost."""
-    with _lock:
-        t0 = time.time()
-        model()
-    return {"loaded": True, "took_secs": round(time.time() - t0, 1), "vram": vram()}
+    """
+    Start loading, and answer at once.
+
+    It used to block for the whole load - the better part of a minute, or
+    several minutes the first time a model is fetched - so the page had a dead
+    request in flight and nothing to show. The work happens on a thread now and
+    the console follows it through /health.
+    """
+    if LOAD["busy"]:
+        return {"started": False, "already": True, "phase": LOAD["phase"]}
+    if _model is not None:
+        return {"started": False, "loaded": True, "vram": vram()}
+
+    def run():
+        try:
+            with _lock:
+                model()
+        except Exception as e:
+            print(f"load failed: {e}", flush=True)
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"started": True}
 
 
 # ---------------------------------------------------------------- web page
@@ -1196,6 +1292,13 @@ button:disabled{opacity:.45;cursor:default}
 .item .txt{flex:1;min-width:190px}
 audio{height:34px}
 code{background:#0d1117;padding:1px 5px;border-radius:3px;font-size:12.5px}
+.progress{height:4px;background:var(--line);border-radius:2px;overflow:hidden;
+  margin-top:11px;display:none}
+.progress.on{display:block}
+.progress i{display:block;height:100%;width:35%;background:var(--acc);border-radius:2px;
+  animation:slide 1.1s ease-in-out infinite}
+@keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
+@media (prefers-reduced-motion: reduce){.progress i{animation:none;width:100%;opacity:.5}}
 .tabs{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--line)}
 .tab{background:transparent;color:var(--soft);border:0;border-bottom:2px solid transparent;
   border-radius:0;padding:8px 14px;font:600 13.5px system-ui;cursor:pointer}
@@ -1239,6 +1342,8 @@ button.danger:hover{border-color:var(--warn)}
     <button class="ghost" onclick="adm('/unload')">Выгрузить из памяти</button>
     <span id="vram" class="meta"></span>
   </div>
+  <div class="progress" id="loadbar"><i></i></div>
+  <div class="meta" id="loadnote" style="margin-top:7px"></div>
 </div>
 
 <div class="card">
@@ -1472,12 +1577,44 @@ async function refresh(){
     }
     if(h.language) $('language').value = h.language
     applyKind(h)
+    showLoad(h.loading)
     $('banner').textContent=(h.ok?'':'модель не в памяти \u00b7 ')
       +h.model+' \u00b7 эталон '+h.slice.secs+'s \u00b7 '+(h.sample_rate||'?')+' Гц'
   }catch(e){ $('vram').textContent='сайдкар не отвечает' }
 }
+// While a model is loading the page follows it once a second; the rest of the
+// time five seconds is plenty and the counters are not free.
+let FAST=null
+function watchLoad(on){
+  if(on && !FAST){ FAST = setInterval(refresh, 1000) }
+  if(!on && FAST){ clearInterval(FAST); FAST = null }
+}
+
+function showLoad(l){
+  const bar = $('loadbar'), note = $('loadnote')
+  if(l && l.busy){
+    bar.className = 'progress on'
+    // only while it is arriving: once the weights are on disk their size is
+    // not news, and the same number under "читаю веса" reads like a download
+    const size = (l.mb && l.phase.indexOf('скач') === 0) ? (' \u00b7 ' + (l.mb >= 1024
+      ? (l.mb/1024).toFixed(1) + ' ГБ на диске' : l.mb + ' МБ на диске')) : ''
+    note.className = 'meta'
+    note.textContent = l.phase + ' \u00b7 ' + Math.round(l.elapsed) + ' с' + size
+      + (l.model ? ' \u00b7 ' + l.model.split('/').pop() : '')
+    watchLoad(true)
+    return
+  }
+  bar.className = 'progress'
+  watchLoad(false)
+  if(l && l.error){ note.className = 'meta warn'; note.textContent = l.error }
+  else if(l && l.took){ note.className = 'meta'
+    note.textContent = 'загружено за ' + l.took + ' с' }
+  else { note.textContent = '' }
+}
+
 async function adm(path){
-  $('vram').textContent='...'
+  $('loadnote').className = 'meta'
+  $('loadnote').textContent = 'запрашиваю...'
   try{ await fetch(path,{method:'POST'}) } finally { refresh() }
 }
 function body(){
