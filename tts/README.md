@@ -47,16 +47,33 @@ clean recording works. What matters is measured, not guessed:
   points to sustained pauses, using a threshold relative to the surrounding
   speech: film dialogue sits around -26 dB and any absolute floor gets it wrong.
 
-**The environments.** A Python venv records its own absolute path in its
-launcher shims, so it cannot be moved. To run the sidecar from this folder,
-either create a venv here, or point this folder at one you already have:
+**The environment.** Python, PyTorch and the model code come to several
+gigabytes and are not in git. Build it once:
 
 ```
-mklink /J I:\jarvis\tts\venv-qwen I:\jarvis-tts\venv-qwen
+uv venv venv-qwen --python 3.10
+.\venv-qwen\Scripts\python.exe -m pip install torch==2.11.0+cu128 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+uv pip install --python .\venv-qwen\Scripts\python.exe -r requirements-qwen.txt
 ```
 
-A directory junction needs no administrator rights, and `.gitignore` already
-covers the name.
+torch comes from PyTorch's own index because the CUDA builds are not on PyPI -
+pick the one that matches your card. `requirements-qwen.txt` pins everything
+else exactly as installed here. The older CosyVoice sidecar has its own
+`requirements-cosyvoice.txt` and a separate `venv`.
+
+**The model weights.** Nothing to do. The scripts point Hugging Face and
+ModelScope at caches inside this folder, so the first run downloads what it
+needs into `tts/hf` and `tts/models` and every run after that is offline.
+
+## First run
+
+```
+.\tts.ps1
+```
+
+That starts the sidecar, fetches the voice model if it is not there yet,
+generates one throwaway line to warm it up, and opens the console. Put your
+reference recording in `xamples/` first, or it has no voice to clone.
 
 ## Running it
 
@@ -93,8 +110,8 @@ stays chosen. `-ResetConfig` is the way out of that.
 
 `/models` lists them with a note each. In short:
 
-- **`Qwen3-TTS-12Hz-1.7B-Base`** - what ships. Best prosody and the steadiest
-  from take to take.
+- **`Qwen3-TTS-12Hz-1.7B-Base`** - the default, and what ships. Best prosody
+  and the steadiest from take to take. A few gigabytes.
 - `Qwen3-TTS-12Hz-0.6B-Base` - about 1.5 GB, faster, noticeably rougher.
 - The `-CustomVoice` and `-VoiceDesign` variants **ignore the reference sample
   entirely**. They are not for cloning and will not sound like your recording.

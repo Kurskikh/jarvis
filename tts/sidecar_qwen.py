@@ -862,7 +862,11 @@ def main():
     # a different port from the CosyVoice sidecar on purpose: both can run, and
     # switching engines is then one setting rather than a restart dance
     ap.add_argument("--port", type=int, default=8772)
-    ap.add_argument("--model-id", default="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+    # The 1.7B is what ships. It is about twice the size of the 0.6B and
+    # noticeably steadier: better prosody, and far less variation from take
+    # to take. A saved config beats this, so an existing install keeps
+    # whatever was chosen in the console.
+    ap.add_argument("--model-id", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base")
     ap.add_argument("--language", default="Russian")
     ap.add_argument("--reference", default=str(HERE / "xamples" / "jarvis_sample.wav"))
     # the same slice the voice pack was baked from; changing it changes the voice
