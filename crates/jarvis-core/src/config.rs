@@ -184,8 +184,15 @@ pub const VAD_NNNOISELESS_THRESHOLD: f32 = 0.8;  // probability threshold for nn
 // Silero VAD, through sherpa-onnx. It answers "is this speech", where the
 // energy VAD answers "is this loud" - which is why it needs no per-room
 // threshold setting the way the energy one does.
-// the model's own speech probability gate; 0.5 is the author's default
-pub const SILERO_VAD_THRESHOLD: f32 = 0.5;
+// The model's own speech probability gate. The author's default is 0.5, and
+// it missed a normal-volume "джарвис" from across a real room on the first
+// evening. Measured with the silero_probe sweep: clean speech passes any of
+// these gates even at a hundredth of full volume, silence and noise pass none
+// of them down to 0.15 - the gate separates speech from everything else with
+// room to spare, so it might as well lean toward hearing. Leaning is cheap
+// now: since the cascade, an open VAD feeds only the wake detector, not the
+// full recogniser.
+pub const SILERO_VAD_THRESHOLD: f32 = 0.3;
 // a pause this long ends a stretch of speech. Short pauses inside a sentence
 // stay inside it, which is precisely what the frame-by-frame energy VAD could
 // not do. The price: detected() holds "voice" for this long after speech
