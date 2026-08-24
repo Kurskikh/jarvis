@@ -131,6 +131,15 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
                     info!("Wake word activated!");
                     duck_others();
                     ipc::send(IpcEvent::WakeWordDetected);
+                    // Answer NOW.
+                    //
+                    // This used to wait until the first transcript came back
+                    // and was judged, which is a recogniser's schedule, not a
+                    // conversation's: measured at 5.7 seconds between the
+                    // detector firing and "да, сэр" being heard. The person
+                    // sees the window react, hears nothing, and says the name
+                    // again.
+                    voices::play_reply();
                     
                     stt::reset_wake_recognizer();
                     audio_processing::reset();
@@ -264,7 +273,17 @@ fn read_segment(text: &str, wake_phrases: &[&str], first_after_wake: bool) -> Se
         };
     }
 
-    if first_after_wake {
+    // No name in the text, and only ONE WORD of that is suspicious enough to
+    // throw away.
+    //
+    // Every phantom this has produced was a single word: "баржа", "карлос",
+    // "райс", "прорыв", "жарвиз" - the name mangled by a full-vocabulary
+    // decoder with nothing else in the audio to work with. But "джарвис, что
+    // такое лес" said in one breath arrives as "что такое лес", because the
+    // command recogniser is under no obligation to transcribe a name the
+    // DETECTOR heard, and T-one routinely does not. Discarding that threw the
+    // question away with it and left the person repeating themselves.
+    if first_after_wake && text.split_whitespace().count() <= 1 {
         return Segment::WakeEcho;
     }
     Segment::Command(text)
@@ -379,7 +398,8 @@ fn recognize_command(
                                   recognized_voice);
                             first_recognition = false;
                             stt::reset_speech_recognizer();
-                            voices::play_reply();
+                            // no reply here any more - it was said when the
+                            // wake word landed
                             vad_state = VadState::WaitingForVoice;
                             silence_frames = 0;
                             start = SystemTime::now();
@@ -1120,6 +1140,25 @@ mod wake_echo_tests {
                 misheard
             );
         }
+    }
+
+    #[test]
+    fn a_run_on_command_survives_without_the_name_in_it() {
+        // "джарвис, что такое лес" in one breath. The detector heard the name;
+        // the command recogniser had no obligation to transcribe it, and T-one
+        // did not. Discarding this threw the question away.
+        assert_eq!(
+            read_segment("что такое лес", RU, true),
+            Segment::Command("что такое лес".to_string())
+        );
+    }
+
+    #[test]
+    fn two_words_are_enough_to_be_taken_seriously() {
+        assert_eq!(
+            read_segment("открой музыку", RU, true),
+            Segment::Command("открой музыку".to_string())
+        );
     }
 
     #[test]
