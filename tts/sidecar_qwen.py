@@ -1537,6 +1537,7 @@ button.danger:hover{border-color:var(--warn)}
   </div>
   <div class="bar">
     <button class="ghost" id="modeload" onclick="modeLoad()">Загрузить эту модель</button>
+    <button class="ghost" id="modeunload" onclick="adm('/unload')">Выгрузить из памяти</button>
     <span id="modemodel" class="meta"></span>
   </div>
   <div class="progress" id="loadbar"><i></i></div>
@@ -1685,13 +1686,15 @@ button.danger:hover{border-color:var(--warn)}
 <div id="pane-gpu" style="display:none">
   <div class="card">
     <div class="bar" style="margin-top:0">
-      <button class="ghost" onclick="adm('/reload')">Загрузить модель в память</button>
-      <button class="ghost" onclick="adm('/unload')">Выгрузить из памяти</button>
+      <button class="ghost" onclick="adm('/unload')">Освободить карту</button>
       <span id="vram" class="meta"></span>
     </div>
     <div class="meta" style="margin-top:9px">Наша собственная модель — обычно самое
-      крупное, что занимает карту. Выгрузка отдаёт её память, не останавливая сайдкар:
-      следующий запрос на синтез загрузит модель заново.</div>
+      крупное, что занимает карту, и завершить сайдкар в списке ниже нельзя. Выгрузка —
+      единственный способ отдать её память, и она не останавливает сайдкар: следующий
+      запрос на синтез загрузит модель заново.
+      <b>Загружается</b> модель на вкладке «Синтез», рядом с выбором режима — здесь её
+      только освобождают.</div>
   </div>
 
   <div class="card">
@@ -1760,6 +1763,8 @@ function modeModelNote(){
     + (inMemory ? ' ' + DOT + ' в памяти' : '')
   // only a model that is genuinely loaded has nothing left to do
   $('modeload').disabled = inMemory || BUSY
+  // nothing to hand back when nothing is holding anything
+  $('modeunload').disabled = !MODEL_IN_MEMORY || BUSY
   showModelNote()
 }
 
