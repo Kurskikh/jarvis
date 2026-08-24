@@ -1,0 +1,43 @@
+# Everything heavy, generated, or personal stays out of the repository. What is
+# tracked here is the source of the speech sidecar and the tools around it -
+# about 140 KB. The working directory it runs in is tens of gigabytes.
+
+# Python environments. A venv records its own absolute path in its launcher
+# shims, so it cannot be moved between directories - see README for how to
+# point this folder at one you already have.
+venv/
+venv-qwen/
+.uvcache/
+__pycache__/
+
+# Model weights and the caches they are downloaded into.
+hf/
+models/
+modelscope/
+
+# CosyVoice is a separate project with its own licence. It is cloned next to
+# these scripts, never vendored into this repository.
+CosyVoice/
+
+# The reference voice, and anything derived from it.
+#
+# This is the one file the whole clone is built from. It is yours, it is not
+# ours to publish, and the repository is deliberately without it - the scripts
+# expect you to put it here yourself. reference_text*.txt are cached
+# transcripts of it, so they are the sample in another form and stay out too.
+xamples/
+examples/
+ref_og.wav
+reference_text*.txt
+
+# Generated speech: baked voice packs, studio takes, probe output.
+pack/
+pack-*/
+studio_out/
+*.wav
+
+# Runtime state. Written by the sidecar's own console and full of absolute
+# paths from the machine that wrote it.
+sidecar_qwen_config.json
+
+*.log
