@@ -5,7 +5,7 @@ pub fn init() -> Result<(), ()> {
 }
 
 pub fn data_callback(frame_buffer: &[i16]) -> Option<i32> {
-    if let Some((recognized, _confidence)) = stt::recognize_wake_word(frame_buffer) {
+    if let Some((recognized, confidence)) = stt::recognize_wake_word(frame_buffer) {
         let recognized = recognized.trim().to_lowercase();
         
         // skip unknown/empty
@@ -13,7 +13,17 @@ pub fn data_callback(frame_buffer: &[i16]) -> Option<i32> {
             return None;
         }
         
-        info!("Wake word candidate: '{}'", recognized);
+        // The score is logged, not enforced - yet.
+        //
+        // It is thrown away today, and that is the lever missing from the one
+        // failure mode left: the detector decoding somebody's ordinary
+        // conversation into the wake word. Vosk answers with a summed
+        // log-likelihood, so it grows with the length of what was decoded and
+        // a threshold picked from taste rather than samples would reject real
+        // activations to catch false ones. Logged on both the candidate and
+        // the match so real and false wake-ups can be compared and a gate
+        // chosen from the numbers.
+        info!("Wake word candidate: '{}' (confidence {:.1})", recognized, confidence);
         
         // language-specific wake phrase
         let lang = i18n::get_language();
@@ -32,7 +42,8 @@ pub fn data_callback(frame_buffer: &[i16]) -> Option<i32> {
                 let similarity = seqdiff::ratio(&wake_chars, &word_chars);
                 
                 if similarity >= config::VOSK_MIN_RATIO {
-                    info!("Wake word match: '{}' ~ '{}' ({:.1}%)", word, wake_phrase, similarity);
+                    info!("Wake word match: '{}' ~ '{}' ({:.1}%, confidence {:.1})",
+                          word, wake_phrase, similarity, confidence);
                     return Some(0);
                 }
             }

@@ -294,7 +294,7 @@ impl Settings {
             // picker that never matches its own value
             "speech_to_text_engine"     => Some(match self.speech_to_text_engine {
                 SpeechToTextEngine::Vosk => "vosk".to_string(),
-                SpeechToTextEngine::TOne => "t-one".to_string(),
+                SpeechToTextEngine::TOne => "t-one-ru".to_string(),
             }),
             "noise_suppression"         => Some(format!("{:?}", self.noise_suppression)),
             "gain_normalizer"           => Some(self.gain_normalizer.to_string()),
@@ -480,7 +480,10 @@ impl Settings {
             "speech_to_text_engine" => {
                 self.speech_to_text_engine = match val.to_lowercase().as_str() {
                     "vosk"  => SpeechToTextEngine::Vosk,
-                    "t-one" | "tone" => SpeechToTextEngine::TOne,
+                    // "t-one-ru" is the id the descriptor carries and the
+                    // one the dropdown offers; the shorter spellings are
+                    // accepted so a hand-edited app.db is not a trap
+                    "t-one-ru" | "t-one" | "tone" => SpeechToTextEngine::TOne,
                     _ => return Err(format!("unknown speech-to-text engine: '{}'", val)),
                 };
             }

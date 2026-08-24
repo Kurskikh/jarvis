@@ -182,15 +182,11 @@ pub fn code_backends(task: Task) -> Vec<BackendOption> {
                 model_id: None,
                 is_default: false,
             },
-            // The wake word is not affected by this choice - it is always
-            // Vosk, because a restricted grammar is what makes listening for
-            // one name cheap. This picks what transcribes the command.
-            BackendOption {
-                id: "t-one".into(),
-                name: "T-one (Russian, CPU)".into(),
-                model_id: Some("t-one-ru".into()),
-                is_default: false,
-            },
+            // T-one is NOT listed here. It comes from its descriptor in the
+            // catalogue below, which is what makes it appear only once its
+            // weights are on disk. Listing it in both places produced two
+            // entries with different ids - "t-one" here, "t-one-ru" there -
+            // of which only one could be saved.
         ],
     }
 }
@@ -218,14 +214,21 @@ pub fn is_builtin_backend(task: Task, backend_id: &str) -> bool {
 // get all available options for a task:
 // "none" first, then code backends, then AI models from catalog
 pub fn get_options(task: Task, models: &[ModelDef]) -> Vec<BackendOption> {
-    let mut options = vec![
-        BackendOption {
-            id: "none".into(),
-            name: "Disabled".into(),
-            model_id: None,
-            is_default: false,
-        },
-    ];
+    // "Disabled" is a real answer for noise suppression, slots or a VAD. It is
+    // not one for speech recognition: an assistant that cannot transcribe a
+    // command is not configured, it is broken.
+    let mut options = if task == Task::Stt {
+        Vec::new()
+    } else {
+        vec![
+            BackendOption {
+                id: "none".into(),
+                name: "Disabled".into(),
+                model_id: None,
+                is_default: false,
+            },
+        ]
+    };
 
     options.extend(code_backends(task));
 
