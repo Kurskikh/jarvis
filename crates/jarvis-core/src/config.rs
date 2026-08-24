@@ -181,6 +181,31 @@ pub const DEFAULT_GAIN_NORMALIZER: bool = false;
 // VAD settings
 pub const VAD_NNNOISELESS_THRESHOLD: f32 = 0.8;  // probability threshold for nnnoiseless
 
+// Silero VAD, through sherpa-onnx. It answers "is this speech", where the
+// energy VAD answers "is this loud" - which is why it needs no per-room
+// threshold setting the way the energy one does.
+// the model's own speech probability gate; 0.5 is the author's default
+pub const SILERO_VAD_THRESHOLD: f32 = 0.5;
+// a pause this long ends a stretch of speech. Short pauses inside a sentence
+// stay inside it, which is precisely what the frame-by-frame energy VAD could
+// not do. The price: detected() holds "voice" for this long after speech
+// actually stops, so every silence timer built on top of is_voice runs this
+// much longer than it does with the energy VAD.
+pub const SILERO_VAD_MIN_SILENCE_SECS: f32 = 0.5;
+// speech shorter than this is a click or a cough, not a voice
+pub const SILERO_VAD_MIN_SPEECH_SECS: f32 = 0.1;
+// the model consumes exactly this many samples per step at 16 kHz - the same
+// 512 the recorder already produces per frame
+pub const SILERO_VAD_WINDOW_SIZE: i32 = 512;
+// tied to the recogniser's cap on purpose: the VAD must never split speech the
+// recogniser is still willing to hear as one utterance
+pub const SILERO_VAD_MAX_SPEECH_SECS: f32 = TONE_MAX_UTTERANCE_SECS;
+// sherpa's internal sample buffer. It has to hold the longest IN-PROGRESS
+// stretch of speech - samples only leave it when a segment closes, so it must
+// comfortably exceed SILERO_VAD_MAX_SPEECH_SECS or continuous speech overflows
+// it. About two megabytes at this size; cheap next to running out.
+pub const SILERO_VAD_BUFFER_SECS: f32 = 30.0;
+
 // How loud a frame has to be before it counts as speech, as RMS across the
 // frame. A setting rather than a constant because it cannot be right for
 // everyone: it is a bare loudness comparison with no notion of speech at all,

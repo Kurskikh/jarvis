@@ -84,3 +84,8 @@ sherpa = ["sherpa-onnx"]
 [[example]]
 name = "tone_probe"
 required-features = ["sherpa"]
+
+# same nature: does the Silero VAD load and answer through sherpa-onnx
+[[example]]
+name = "silero_probe"
+required-features = ["sherpa"]

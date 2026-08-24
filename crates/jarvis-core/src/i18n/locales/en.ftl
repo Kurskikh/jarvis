@@ -301,4 +301,5 @@ backend-none = Disabled
 backend-intent-classifier = Intent Classifier
 backend-energy = Energy-based
 backend-nnnoiseless = Nnnoiseless
+backend-silero-vad = Silero VAD
 settings-slots-no-backends = No slot-extraction backends installed. Download the GLiNER model files into resources/models/gliner_small-v2.1 (or gliner_multi-v2.1) - the descriptors are already there and the backend appears here once the weights are in place.

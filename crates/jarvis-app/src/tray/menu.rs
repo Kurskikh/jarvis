@@ -129,19 +129,24 @@ pub fn build(settings: &SettingsManager) -> TrayMenu {
     });
 
     // -- vad submenu
+    //
+    // Built from the same catalogue the settings window renders, not from a
+    // third hand-written list: a backend whose weights are not on disk is
+    // simply not offered, instead of being a menu item whose click fails
+    // validation and leaves a check mark on a detector that is not running.
     let vad_sub = Submenu::new(i18n::t("tray-vad"), true);
     let current_vad = settings.read("vad_backend").unwrap_or_default();
     let mut vad_items = Vec::new();
-    for (label, value) in &[("None", "none"), ("Energy", "energy"), ("Nnnoiseless", "nnnoiseless")] {
+    for option in jarvis_core::models::get_options(jarvis_core::models::Task::Vad) {
         let item = CheckMenuItem::with_id(
-            format!("set:vad_backend:{}", value),
-            *label,
+            format!("set:vad_backend:{}", option.id),
+            &option.name,
             true,
-            current_vad == *value,
+            current_vad == option.id,
             None,
         );
         let _ = vad_sub.append(&item);
-        vad_items.push((item, value.to_string()));
+        vad_items.push((item, option.id));
     }
     radio_groups.push(RadioGroup {
         setting_key: "vad_backend".to_string(),

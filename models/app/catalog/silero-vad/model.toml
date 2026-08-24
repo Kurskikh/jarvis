@@ -1,0 +1,20 @@
+# Read by jarvis-core: models::catalog::scan_models() -> load_model_def()
+#
+# The weights are NOT in version control - about two megabytes - and this
+# descriptor is all that ships. scan_models() checks for model.onnx before
+# publishing the model, so until it is here the backend is not offered in
+# settings and cannot be stored. Drop the file in and it appears.
+#
+# Where it comes from:
+#   https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+# One file, renamed to model.onnx, straight into this directory.
+#
+# What it is for: deciding "is somebody speaking" before the wake detector is
+# given the audio. The energy VAD it replaces measures loudness, not speech -
+# a fan can open the pipeline and a quiet name can fail to.
+
+[model]
+id = "silero-vad"
+name = "Silero VAD"
+tasks = ["vad"]
+description = "Neural voice activity detection through sherpa-onnx. About two megabytes and under a millisecond per frame on one processor thread. Answers whether a frame is speech rather than whether it is loud, so a fan does not open the pipeline and a quiet voice still does - the two failure modes no energy threshold can fix at once."

@@ -300,4 +300,5 @@ backend-none = Отключено
 backend-intent-classifier = Intent Classifier
 backend-energy = По уровню громкости
 backend-nnnoiseless = Nnnoiseless
+backend-silero-vad = Silero VAD
 settings-slots-no-backends = Бэкенды извлечения слотов не установлены. Скачайте файлы модели GLiNER в resources/models/gliner_small-v2.1 (или gliner_multi-v2.1) - описания моделей уже на месте, бэкенд появится здесь сразу после загрузки весов.
