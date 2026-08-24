@@ -40,7 +40,7 @@ import torch
 
 sys.path.insert(0, str(HERE))
 
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, Request
 from fastapi.responses import (StreamingResponse, JSONResponse, HTMLResponse,
                                Response)
 
@@ -223,6 +223,71 @@ def vram():
         # is the number that matters when something else wants the card.
         "ours_held_mb": mb(torch.cuda.memory_reserved()),
     }
+
+
+# ------------------------------------------------------- recording your own
+
+# Where reference recordings live. Anything dropped in here shows up in the
+# console's list without further ceremony.
+SAMPLES_DIR = HERE / "xamples"
+
+# What to read into the microphone, and why there is a script at all.
+#
+# Cloning needs the reference audio AND the words spoken in it, matched exactly.
+# Working that out from a recording is a job for whisper, which is deliberately
+# not installed here - so every new reference used to mean typing out by hand
+# what it says, or falling back to x-vector and a worse voice.
+#
+# Reading from a script removes the problem instead of solving it: if the words
+# are on the screen when the recording is made, the transcript is already known.
+#
+# Three sentences, and the number matters as much as the words.
+#
+# The transcript has to match the slice WORD FOR WORD, so the recording is used
+# whole rather than cut - which means the script has to be about as long as a
+# reference should be. Five sentences ran to twenty-five seconds and had to be
+# trimmed, and a trimmed recording no longer matches the text that was read.
+# Three is around twelve seconds aloud, which is what the model wants anyway.
+#
+# Chosen for coverage rather than meaning: hard consonant clusters, a question,
+# numbers, and both a statement and an address.
+REFERENCE_SCRIPT = [
+    "Все системы работают штатно, сэр. Отклонений не обнаружено.",
+    "Скажите, нужно ли включить дополнительное освещение в мастерской?",
+    "Шестнадцать процентов мощности отведено на охлаждение, остальное в резерве.",
+]
+
+
+def _wav_seconds(path):
+    try:
+        info = sf.info(str(path))
+        return round(info.frames / info.samplerate, 2)
+    except Exception:
+        return None
+
+
+def list_references():
+    """Every recording available to clone from, newest first."""
+    if not SAMPLES_DIR.exists():
+        return []
+    out = []
+    for wav in SAMPLES_DIR.glob("*.wav"):
+        try:
+            stat = wav.stat()
+        except OSError:
+            continue
+        out.append({
+            "name": wav.name,
+            "path": str(wav),
+            "secs": _wav_seconds(wav),
+            "mb": round(stat.st_size / 2**20, 2),
+            "current": str(wav) == str(CFG.reference) if CFG else False,
+            "mtime": stat.st_mtime,
+        })
+    out.sort(key=lambda r: r["mtime"], reverse=True)
+    for r in out:
+        r.pop("mtime")
+    return out
 
 
 # ------------------------------------------------------------ the voice pack
@@ -686,15 +751,54 @@ def model_kind(model_id=None):
     return "clone"
 
 
+# The nine that ship with CustomVoice, as documented by the model card.
+#
+# A fallback, not the answer: the list is asked of the model first. It is here
+# because the answer arrives through two layers - faster_qwen3_tts wraps the
+# qwen_tts model - and only the inner one knows the names. When that lookup
+# came back empty the console showed a picker with nothing in it and no reason
+# given, which is indistinguishable from a broken feature.
+#
+# Nothing is taken on trust: whatever is chosen is validated by the model at
+# generation time, and a name it does not know comes back as a plain error.
+DOCUMENTED_SPEAKERS = [
+    "Aiden", "Dylan", "Eric", "Ono_Anna", "Ryan",
+    "Serena", "Sohee", "Uncle_Fu", "Vivian",
+]
+
+
 def model_speakers():
-    """The built-in voices of the loaded model, or [] if it has none."""
+    """
+    The built-in voices of the loaded model, or [] if it has none.
+
+    Asked of the wrapper, then of the model it wraps. Only the second one
+    actually implements it, and the first swallowing an AttributeError is how
+    the list came back empty on a CustomVoice checkpoint that was loaded and
+    working.
+    """
     if _model is None:
         return []
-    try:
-        names = _model.get_supported_speakers()
-    except Exception:
-        return []
-    return sorted(str(n) for n in (names or []))
+
+    for holder in (_model, getattr(_model, "model", None)):
+        if holder is None:
+            continue
+        getter = getattr(holder, "get_supported_speakers", None)
+        if getter is None:
+            continue
+        try:
+            names = getter()
+        except Exception as e:
+            print(f"speaker list refused by {type(holder).__name__}: {e}", flush=True)
+            continue
+        if names:
+            return sorted(str(n) for n in names)
+
+    # asked and got nothing: the documented list, for a model that is meant to
+    # have one
+    if model_kind() == "custom":
+        print("model named no speakers; offering the documented nine", flush=True)
+        return list(DOCUMENTED_SPEAKERS)
+    return []
 
 
 def _speaker(wanted=None):
@@ -1022,6 +1126,12 @@ def api_reference(body: dict = Body(...)):
         elif given:
             cache.write_text(given, encoding="utf-8")
             text, source = given, "given"
+        elif ref.with_suffix(".txt").exists():
+            # written when the recording was made, from the script that was on
+            # screen while it was read
+            text = ref.with_suffix(".txt").read_text(encoding="utf-8").strip()
+            cache.write_text(text, encoding="utf-8")
+            source = "recorded"
         else:
             try:
                 text, source = transcribe(path), "whisper"
@@ -1040,6 +1150,67 @@ def api_reference(body: dict = Body(...)):
           f"(transcript from {source})", flush=True)
     return {"reference": str(ref), "start": start, "length": length, "snap": snap,
             "secs": round(secs, 2), "text": text, "transcript_from": source}
+
+
+@app.get("/references")
+def api_references():
+    """What can be cloned from, and the words to read if making a new one."""
+    return {"dir": str(SAMPLES_DIR), "current": str(CFG.reference),
+            "files": list_references(), "script": REFERENCE_SCRIPT}
+
+
+@app.post("/reference/upload")
+async def api_reference_upload(request: Request):
+    """
+    Take a recording made in the browser, or a file chosen there.
+
+    The console cannot hand over a path - a web page never learns where a
+    chosen file lives - so the bytes come across and land in xamples/ beside
+    the ones that were always there.
+
+    A transcript sent with it is written to the cache under the audio's own
+    hash, which is what makes reading from a script worth doing: the words are
+    known at the moment of recording and never have to be worked out again.
+    """
+    name = (request.query_params.get("name") or "").strip()
+    text = (request.query_params.get("text") or "").strip()
+
+    stem = "".join(c for c in Path(name).stem if c.isalnum() or c in "-_ ").strip()
+    stem = stem[:48] or "recording"
+
+    data = await request.body()
+    if len(data) < 1024:
+        return JSONResponse({"error": "запись пустая"}, status_code=400)
+    if len(data) > 80 * 2**20:
+        return JSONResponse({"error": "файл больше 80 МБ"}, status_code=413)
+
+    SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    target = SAMPLES_DIR / (stem + ".wav")
+    n = 2
+    while target.exists():
+        target = SAMPLES_DIR / ("{}-{}.wav".format(stem, n))
+        n += 1
+    target.write_bytes(data)
+
+    # refuse anything that is not audio we can actually read, rather than
+    # letting it fail later inside the model
+    secs = _wav_seconds(target)
+    if secs is None:
+        target.unlink(missing_ok=True)
+        return JSONResponse(
+            {"error": "не похоже на wav — сохранить не удалось"}, status_code=400)
+
+    if text:
+        # Beside the recording, not in the transcript cache: that cache is keyed
+        # by the hash of the SLICE, which does not exist yet and changes with
+        # start and length. A file next to the wav survives all of that and
+        # makes the recording self-describing.
+        target.with_suffix(".txt").write_text(text, encoding="utf-8")
+
+    print(f"[reference] saved {target.name} ({secs}s)"
+          + (" with transcript" if text else ""), flush=True)
+    return {"name": target.name, "path": str(target), "secs": secs,
+            "transcript_saved": bool(text), "files": list_references()}
 
 
 @app.get("/reference/audio")
@@ -1549,7 +1720,30 @@ button.danger:hover{border-color:var(--warn)}
   <label>Эталон голоса</label>
   <div class="meta" style="margin-bottom:9px">А вот это — настоящее состояние загруженной модели:
     из этого отрезка клонируется голос. Меняется на лету, со следующей же фразы.</div>
-  <input id="ref_path" placeholder="путь к wav">
+  <div class="row" style="margin-top:2px">
+    <div style="flex:3"><select id="ref_pick" onchange="refPicked()"></select></div>
+    <div style="flex:1;min-width:130px"><button class="ghost" style="width:100%"
+      onclick="$('ref_file').click()">Обзор…</button></div>
+    <div style="flex:1;min-width:170px"><button class="ghost" style="width:100%"
+      onclick="recToggle()" id="recbtn">Записать свой голос</button></div>
+  </div>
+  <input type="file" id="ref_file" accept="audio/wav,audio/x-wav,.wav"
+    style="display:none" onchange="refUploadChosen()">
+  <input id="ref_path" placeholder="путь к wav" style="margin-top:9px">
+
+  <div id="reccard" style="display:none;margin-top:12px;padding:13px;
+       border:1px solid var(--line);border-radius:6px">
+    <div class="meta">Читайте вслух, обычным своим темпом. Это <b>снимает
+      необходимость расшифровки</b>: слова уже известны, и они сохранятся вместе
+      с записью — модели нужен и звук, и то, что в нём сказано.</div>
+    <div id="recscript" style="margin-top:10px;font-size:16px;line-height:1.7"></div>
+    <div class="bar">
+      <button id="recstart" onclick="recStart()">Начать запись</button>
+      <button class="ghost" id="recstop" onclick="recStop()" disabled>Остановить</button>
+      <span id="recmeta" class="meta"></span>
+    </div>
+    <div class="progress" id="recbar"><i></i></div>
+  </div>
   <div class="row" style="margin-top:10px">
     <div><label>Начало, с</label><input id="ref_start" type="number" step="0.5" value="5"></div>
     <div><label>Длина, с</label><input id="ref_length" type="number" step="1" value="8"></div>
@@ -1827,7 +2021,8 @@ function applyKind(h){
     sel.disabled = true
     sel.innerHTML = '<option disabled selected>' +
       (KIND==='design' ? 'VoiceDesign строит голос по описанию'
-                       : 'эта модель клонирует голос с образца')
+       : KIND==='custom' ? 'модель загружается или не назвала голоса'
+       : 'эта модель клонирует голос с образца')
       + '</option>'
   }
   const note = $('instructnote')
@@ -2082,6 +2277,147 @@ async function applyRef(){
   st.textContent='отрезок '+d.secs+' с \u00b7 расшифровка из: '+d.transcript_from
   hearRef()
 }
+// ------------------------------------------------- choosing a reference
+async function refList(){
+  try{
+    const d = await (await fetch('/references')).json()
+    REF_SCRIPT = d.script || []
+    const sel = $('ref_pick')
+    sel.innerHTML = '<option value="">— выбрать из xamples —</option>'
+      + d.files.map(f => '<option value="'+esc(f.path)+'"'
+        + (f.current ? ' selected' : '') + '>' + esc(f.name)
+        + (f.secs ? ' \u00b7 ' + f.secs + ' с' : '') + '</option>').join('')
+  }catch(e){}
+}
+
+function refPicked(){
+  const p = $('ref_pick').value
+  if(p) $('ref_path').value = p
+}
+
+async function refUpload(blob, name, text){
+  const q = '?name=' + encodeURIComponent(name)
+    + (text ? '&text=' + encodeURIComponent(text) : '')
+  const r = await fetch('/reference/upload' + q, {method:'POST', body: blob})
+  const j = await r.json()
+  if(!r.ok) throw new Error(j.error || ('ошибка ' + r.status))
+  return j
+}
+
+async function refUploadChosen(){
+  const f = $('ref_file').files[0]
+  if(!f) return
+  $('refmeta').textContent = 'переношу ' + f.name + '...'
+  try{
+    // A page never learns where a chosen file lives, so the bytes go across
+    // and land beside the samples that were always there.
+    const j = await refUpload(f, f.name, '')
+    $('ref_path').value = j.path
+    $('refmeta').textContent = j.name + ' \u00b7 ' + j.secs
+      + ' с \u2014 нажмите «Применить эталон». Расшифровку придётся вписать.'
+    await refList()
+    $('ref_pick').value = j.path
+  }catch(e){ $('refmeta').textContent = String(e.message || e) }
+  $('ref_file').value = ''
+}
+
+// --------------------------------------------------- recording your own
+let REF_SCRIPT=[], REC=null, RECCHUNKS=[], RECCTX=null, RECSTART=0, RECTIMER=null
+
+function recToggle(){
+  const card = $('reccard')
+  const on = card.style.display === 'none'
+  card.style.display = on ? '' : 'none'
+  $('recbtn').textContent = on ? 'Свернуть запись' : 'Записать свой голос'
+  if(on){
+    $('recscript').innerHTML = REF_SCRIPT.map((s,i) =>
+      '<div style="margin-bottom:7px">' + (i+1) + '. ' + esc(s) + '</div>').join('')
+  }
+}
+
+// WAV is written here rather than asking the browser for one: MediaRecorder
+// produces webm/opus, which soundfile cannot open and the model cannot use.
+function encodeWav(samples, rate){
+  const buf = new ArrayBuffer(44 + samples.length*2)
+  const view = new DataView(buf)
+  const put = (off, s) => { for(let i=0;i<s.length;i++) view.setUint8(off+i, s.charCodeAt(i)) }
+  put(0,'RIFF'); view.setUint32(4, 36 + samples.length*2, true); put(8,'WAVEfmt ')
+  view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true)
+  view.setUint32(24,rate,true); view.setUint32(28,rate*2,true)
+  view.setUint16(32,2,true); view.setUint16(34,16,true)
+  put(36,'data'); view.setUint32(40, samples.length*2, true)
+  let off = 44
+  for(let i=0;i<samples.length;i++, off+=2){
+    const s = Math.max(-1, Math.min(1, samples[i]))
+    view.setInt16(off, s < 0 ? s*0x8000 : s*0x7FFF, true)
+  }
+  return new Blob([view], {type:'audio/wav'})
+}
+
+async function recStart(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:{
+      channelCount:1, echoCancellation:false, noiseSuppression:false, autoGainControl:false}})
+    RECCTX = new (window.AudioContext||window.webkitAudioContext)()
+    const src = RECCTX.createMediaStreamSource(stream)
+    const node = RECCTX.createScriptProcessor(4096, 1, 1)
+    RECCHUNKS = []
+    node.onaudioprocess = e => {
+      RECCHUNKS.push(new Float32Array(e.inputBuffer.getChannelData(0)))
+    }
+    src.connect(node); node.connect(RECCTX.destination)
+    REC = {stream, src, node}
+    RECSTART = performance.now()
+    $('recstart').disabled = true; $('recstop').disabled = false
+    $('recbar').className = 'progress on'
+    RECTIMER = setInterval(() => {
+      $('recmeta').textContent = 'идёт запись \u00b7 '
+        + ((performance.now()-RECSTART)/1000).toFixed(1) + ' с'
+    }, 200)
+  }catch(e){
+    $('recmeta').textContent = 'микрофон недоступен: ' + (e.message || e)
+  }
+}
+
+async function recStop(){
+  if(!REC) return
+  clearInterval(RECTIMER); RECTIMER = null
+  const rate = RECCTX.sampleRate
+  REC.node.disconnect(); REC.src.disconnect()
+  REC.stream.getTracks().forEach(t => t.stop())
+  await RECCTX.close()
+  const total = RECCHUNKS.reduce((n,c) => n + c.length, 0)
+  const all = new Float32Array(total)
+  let at = 0
+  for(const c of RECCHUNKS){ all.set(c, at); at += c.length }
+  REC = null; RECCHUNKS = []
+  $('recstart').disabled = false; $('recstop').disabled = true
+  $('recbar').className = 'progress'
+
+  const secs = total / rate
+  if(secs < 4){
+    $('recmeta').textContent = 'слишком коротко (' + secs.toFixed(1)
+      + ' с) \u2014 прочитайте хотя бы пару фраз'
+    return
+  }
+  $('recmeta').textContent = 'сохраняю ' + secs.toFixed(1) + ' с...'
+  try{
+    // the words are known because they were on the screen while it was read
+    const j = await refUpload(encodeWav(all, rate), 'my-voice', REF_SCRIPT.join(' '))
+    $('ref_path').value = j.path
+    // whole, and no snapping: the transcript describes everything that was
+    // read, so any trimming would make the two disagree
+    $('ref_start').value = 0
+    $('ref_length').value = Math.ceil(j.secs)
+    $('ref_snap').value = '0'
+    $('ref_text').value = REF_SCRIPT.join(' ')
+    $('recmeta').textContent = j.name + ' \u00b7 ' + j.secs
+      + ' с \u2014 расшифровка сохранена. Нажмите «Применить эталон».'
+    await refList()
+    $('ref_pick').value = j.path
+  }catch(e){ $('recmeta').textContent = String(e.message || e) }
+}
+
 function hearRef(){ $('refaudio').src='/reference/audio?'+Date.now() }
 loadModels()
 loadCfg()
@@ -2361,6 +2697,7 @@ async function gpuKill(i){
   finally{ gpuLoad() }
 }
 setMode('clone')
+refList()
 refresh(); setInterval(refresh, 5000)
 </script></body></html>
 """
