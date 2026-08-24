@@ -42,6 +42,11 @@ pub use voices::*;
 mod backends;
 pub use backends::*;
 
+// probes the settings screen makes before saving: what models a server has,
+// and whether the speech sidecar is up
+mod probes;
+pub use probes::*;
+
 // import COMMAND EDITOR commands
 mod commands_editor;
 pub use commands_editor::*;

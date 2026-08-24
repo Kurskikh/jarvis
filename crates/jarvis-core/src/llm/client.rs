@@ -104,6 +104,7 @@ impl LlmConfig {
              s.llm_system_prompt.clone(), s.llm_timeout, s.llm_max_tokens,
              s.llm_thinking.clone(), s.llm_allow_remote)
         };
+        let speaking = DB.get().map(|db| db.read().llm_speak).unwrap_or(false);
 
         let base_url = base_url.trim().trim_end_matches('/').to_string();
         if base_url.is_empty() {
@@ -112,17 +113,12 @@ impl LlmConfig {
                  ollama: http://127.0.0.1:11434/v1".to_string()));
         }
 
-        // the offline-first gate, second copy. Settings::validate() already
-        // refuses to SAVE a remote url with llm_allow_remote off, but app.db
-        // can be hand-edited and Settings::default() never goes through set(),
-        // so the promise is enforced again at the point of use. this is the one
-        // that actually decides whether a packet leaves the machine.
-        if !is_loopback_url(&base_url) && !allow_remote {
-            return Err(LlmError::NotConfigured(format!(
-                "'{}' is not a loopback address and 'llm_allow_remote' is off. jarvis is \
-                 offline-first: nothing you say leaves this machine until that setting is \
-                 turned on deliberately.", base_url)));
-        }
+        // the offline-first gate, at the point of use. Settings::validate()
+        // already refuses to SAVE a remote url with llm_allow_remote off, but
+        // app.db can be hand-edited and Settings::default() never goes through
+        // set(), so the promise is enforced again here - this is the check that
+        // actually decides whether a packet leaves the machine.
+        offline_gate(&base_url, allow_remote)?;
 
         let model = model.trim().to_string();
         if model.is_empty() {
@@ -148,6 +144,22 @@ impl LlmConfig {
             } else {
                 format!("{}
 {}", base, config::LLM_NO_THINK_DIRECTIVE)
+            }
+        } else {
+            system_prompt
+        };
+
+        // the answer is going to a speaker, so say so. Without this the model
+        // is free to answer without punctuation, and unpunctuated text is read
+        // as one flat run-on - the single biggest thing wrong with how a
+        // spoken answer sounds.
+        let system_prompt = if speaking {
+            let base = system_prompt.trim();
+            if base.is_empty() {
+                config::LLM_SPEECH_STYLE_DIRECTIVE.to_string()
+            } else {
+                format!("{}
+{}", base, config::LLM_SPEECH_STYLE_DIRECTIVE)
             }
         } else {
             system_prompt
@@ -348,4 +360,190 @@ fn strip_reasoning(text: &str) -> &str {
 fn head_of(body: &str) -> String {
     let cut = body.char_indices().nth(200).map(|(i, _)| i).unwrap_or(body.len());
     body[..cut].replace('\n', " ").trim().to_string()
+}
+
+// The offline-first gate, in one place.
+//
+// It is stated twice by design - Settings::validate() refuses to SAVE a remote
+// url while llm_allow_remote is off, and this decides at the point of use - but
+// the second statement must not drift from the first, and there are now two
+// callers of it: a turn, and the settings screen asking a server what models it
+// has. That screen asks with an address that has not been saved yet, which is
+// exactly why the check cannot be left to the save path alone.
+fn offline_gate(base_url: &str, allow_remote: bool) -> Result<(), LlmError> {
+    if !is_loopback_url(base_url) && !allow_remote {
+        return Err(LlmError::NotConfigured(format!(
+            "'{}' is not a loopback address and 'llm_allow_remote' is off. jarvis is \
+             offline-first: nothing leaves this machine until that setting is turned \
+             on deliberately.", base_url)));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- model list
+
+// Ask the server which models it can serve.
+//
+// The settings screen used to take the model name as free text, so a typo and a
+// server that had not loaded the model yet produced the same silence. Asking
+// turns that into a choice.
+//
+// Called with what is TYPED in the form rather than what is stored, so the
+// address can be tried before it is committed to - hence the explicit
+// allow_remote argument instead of a read from the database.
+pub async fn list_models(
+    base_url: &str,
+    token: &str,
+    allow_remote: bool,
+    timeout_secs: u64,
+) -> Result<Vec<String>, LlmError> {
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err(LlmError::NotConfigured(
+            "the address is empty - there is nothing to ask.".to_string()));
+    }
+    offline_gate(&base_url, allow_remote)?;
+
+    let endpoint = format!("{}/models", base_url);
+    let client = CLIENT.as_ref().map_err(|e| LlmError::Transport {
+        endpoint: endpoint.clone(),
+        source: e.clone(),
+    })?;
+
+    let mut req = client.get(&endpoint);
+    let token = token.trim();
+    if !token.is_empty() {
+        req = req.bearer_auth(token);
+    }
+
+    // same shape as a turn: OUR timeout decides, never reqwest's error flags -
+    // is_timeout() and is_connect() can both be true for a single error.
+    let resp = tokio::time::timeout(Duration::from_secs(timeout_secs), req.send())
+        .await
+        .map_err(|_| LlmError::Timeout { endpoint: endpoint.clone(), secs: timeout_secs })?
+        .map_err(|e| {
+            if e.is_connect() {
+                LlmError::Connect { endpoint: endpoint.clone(), source: e.to_string() }
+            } else {
+                LlmError::Transport { endpoint: endpoint.clone(), source: e.to_string() }
+            }
+        })?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(LlmError::Unauthorized {
+            endpoint,
+            token_configured: !token.is_empty(),
+            server_message: Some(head_of(&body)),
+        });
+    }
+    if !status.is_success() {
+        return Err(LlmError::HttpStatus {
+            endpoint,
+            status: status.as_u16(),
+            server_message: Some(head_of(&body)),
+        });
+    }
+
+    parse_models(&body, &endpoint)
+}
+
+// {"data":[{"id":"..."}]} - the OpenAI shape, which LM Studio and ollama's
+// /v1/models both answer in. Split out from the request so the shapes that
+// matter, and the ones that do not parse, can be tested without a server.
+fn parse_models(body: &str, endpoint: &str) -> Result<Vec<String>, LlmError> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| LlmError::Malformed {
+            endpoint: endpoint.to_string(),
+            detail: format!("the model list is not JSON: {}", e),
+            body_head: head_of(body),
+        })?;
+
+    let data = parsed
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or_else(|| LlmError::Malformed {
+            endpoint: endpoint.to_string(),
+            detail: "the reply has no 'data' array - this does not look like an \
+                     OpenAI-compatible /models".to_string(),
+            body_head: head_of(body),
+        })?;
+
+    let mut ids: Vec<String> = data
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    // a server may list the same id twice across pages; the screen shows a list
+    // of choices, and a duplicated choice is a bug the user has to look at
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_openai_shape() {
+        let body = r#"{"object":"list","data":[
+            {"id":"gemma-4-e4b-it-heretic","object":"model"},
+            {"id":"qwen3-asr-1.7b","object":"model"}]}"#;
+        assert_eq!(
+            parse_models(body, "e").unwrap(),
+            vec!["gemma-4-e4b-it-heretic".to_string(), "qwen3-asr-1.7b".to_string()]
+        );
+    }
+
+    #[test]
+    fn sorts_deduplicates_and_drops_blanks() {
+        let body = r#"{"data":[{"id":"b"},{"id":"a"},{"id":"a"},{"id":"  "},{"id":" c "},{"no_id":1}]}"#;
+        assert_eq!(
+            parse_models(body, "e").unwrap(),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_empty_list_is_not_an_error() {
+        // a server with nothing loaded answers {"data":[]}. that is a fact
+        // about the server, not a failure - the screen says so and leaves the
+        // name typeable rather than showing a red error.
+        assert!(parse_models(r#"{"data":[]}"#, "e").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_reply_without_data_is_malformed() {
+        let err = parse_models(r#"{"models":["a"]}"#, "e").unwrap_err();
+        assert_eq!(err.code(), "malformed");
+    }
+
+    #[test]
+    fn a_reply_that_is_not_json_is_malformed() {
+        // what a plain web server answers when the path is wrong: HTML
+        let err = parse_models("<!doctype html><title>404</title>", "e").unwrap_err();
+        assert_eq!(err.code(), "malformed");
+    }
+
+    #[test]
+    fn the_gate_refuses_a_remote_address_when_remote_is_off() {
+        let err = offline_gate("http://192.168.1.50:1234/v1", false).unwrap_err();
+        assert_eq!(err.code(), "not_configured");
+    }
+
+    #[test]
+    fn the_gate_allows_loopback_with_remote_off() {
+        assert!(offline_gate("http://127.0.0.1:1234/v1", false).is_ok());
+    }
+
+    #[test]
+    fn the_gate_allows_a_remote_address_once_remote_is_on() {
+        // the setting exists to be honoured, not to be a second lock
+        assert!(offline_gate("http://192.168.1.50:1234/v1", true).is_ok());
+    }
 }

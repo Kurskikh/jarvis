@@ -100,6 +100,8 @@ fn main() {
 
             // model registry
             tauri_commands::list_backend_options,
+            tauri_commands::list_llm_models,
+            tauri_commands::check_speech_sidecar,
 
             // i18n
             tauri_commands::get_translations,

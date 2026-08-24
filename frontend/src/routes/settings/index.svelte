@@ -22,7 +22,8 @@
         PasswordInput,
         InputWrapper,
         NativeSelect,
-        Switch
+        Switch,
+        Accordion
     } from "@svelteuidev/core"
 
     import {
@@ -37,6 +38,59 @@
     } from "radix-icons-svelte"
 
     $: t = (key: string) => translate($translations, key)
+
+    // ------------------------------------------------------------- probes
+    //
+    // Both ask a local service about itself using what is typed in the form,
+    // not what is saved, so an address can be tried before committing to it.
+    // Both are allowed to fail: a server that is not running is an ordinary
+    // state of the world here, not an error the screen should shout about.
+
+    let llmModels: string[] = []
+    let llmModelsLoading = false
+    let llmModelsError = ""
+    let llmModelsAsked = false
+
+    async function fetchLlmModels() {
+        llmModelsLoading = true
+        llmModelsError = ""
+        try {
+            const found = await invoke<string[]>("list_llm_models", {
+                baseUrl: llmBaseUrl.trim(),
+                apiKey: apiKeyOpenai,
+                allowRemote: llmAllowRemote
+            })
+            // Keep the saved name even when the server does not report it.
+            // Otherwise a server that is down for a moment erases the choice:
+            // the select would snap to its first entry and the next save would
+            // write a model nobody picked.
+            const saved = llmModel.trim()
+            llmModels = saved && !found.includes(saved) ? [saved, ...found] : found
+        } catch (err) {
+            llmModelsError = String(err)
+            llmModels = []
+        } finally {
+            llmModelsAsked = true
+            llmModelsLoading = false
+        }
+    }
+
+    let sidecarChecking = false
+    let sidecarError = ""
+    let sidecarStatus: { model: string; sample_rate: number | null; reference: string } | null = null
+
+    async function checkSidecar() {
+        sidecarChecking = true
+        sidecarError = ""
+        sidecarStatus = null
+        try {
+            sidecarStatus = await invoke("check_speech_sidecar", { url: llmTtsUrl.trim() })
+        } catch (err) {
+            sidecarError = String(err)
+        } finally {
+            sidecarChecking = false
+        }
+    }
 
     interface VoiceMeta {
         id: string
@@ -117,6 +171,14 @@
     let llmSystemPrompt = ""
     let llmAllowRemote = false
 
+    let llmSpeak = true
+    let llmTtsUrl = ""
+    let llmTtsMode = "stream"
+    let llmTtsPython = ""
+    let llmTtsScript = ""
+    let llmTtsInstruct = ""
+    let followUpSecs = 8
+
     // mirrors is_loopback_url in crates/jarvis-core/src/db/structs.rs. purely an
     // early warning next to the field - the real gate is Settings::validate_change(),
     // which is what rejects the save, and llm::LlmConfig::from_settings(),
@@ -160,6 +222,27 @@
     // empty box here would fail the save of every setting on every tab
     $: llmMaxTokensToSave = Math.min(32768, Math.max(64,
         Math.round(Number.isFinite(+llmMaxTokens) ? +llmMaxTokens : 2048)))
+
+    // same guard as the endpoint box above: Settings::set rejects an empty
+    // sidecar url and db_write_many is all-or-nothing, so one cleared field
+    // here would fail the save of every setting on every tab
+    const DEFAULT_LLM_TTS_URL = "http://127.0.0.1:8771"
+    $: llmTtsUrlToSave = llmTtsUrl.trim() || DEFAULT_LLM_TTS_URL
+
+    // the sidecar is local by definition, so unlike the model endpoint there
+    // is no allow-remote companion - a non-loopback address is simply refused
+    $: llmTtsUrlBad = llmTtsUrl.trim() !== "" && !isLoopbackUrl(llmTtsUrl)
+
+    // the script is only read when an interpreter is set, so asking for one
+    // without the other is a half-configured spawn that fails at the first
+    // question instead of here
+    // a cleared NumberInput binds "" / undefined and would go out as "NaN";
+    // Settings::set refuses it and db_write_many is all-or-nothing
+    $: followUpToSave = Math.min(120, Math.max(0,
+        Math.round(Number.isFinite(+followUpSecs) ? +followUpSecs : 8)))
+
+    $: llmTtsHalfConfigured =
+        (llmTtsPython.trim() === "") !== (llmTtsScript.trim() === "")
 
     $: llmRemoteBlocked =
         llmBaseUrl.trim() !== "" && !isLoopbackUrl(llmBaseUrl) && !llmAllowRemote
@@ -218,7 +301,14 @@
                     llm_max_tokens: llmMaxTokensToSave.toString(),
                     llm_thinking: llmThinking,
                     llm_system_prompt: llmSystemPrompt,
-                    llm_allow_remote: llmAllowRemote.toString()
+                    llm_allow_remote: llmAllowRemote.toString(),
+                    llm_speak: llmSpeak.toString(),
+                    llm_tts_url: llmTtsUrlToSave,
+                    llm_tts_mode: llmTtsMode,
+                    llm_tts_python: llmTtsPython.trim(),
+                    llm_tts_script: llmTtsScript.trim(),
+                    llm_tts_instruct: llmTtsInstruct.trim(),
+                    follow_up_secs: followUpToSave.toString()
                 }
             })
 
@@ -328,7 +418,9 @@
                    noiseSuppression, vad, gainNormalizer,
                    openai,
                    llmEnabledRaw, llmBaseUrlRaw, llmModelRaw,
-                   llmTimeoutRaw, llmMaxTokensRaw, llmThinkingRaw, llmSystemPromptRaw, llmAllowRemoteRaw] = await Promise.all([
+                   llmTimeoutRaw, llmMaxTokensRaw, llmThinkingRaw, llmSystemPromptRaw, llmAllowRemoteRaw,
+                   llmSpeakRaw, llmTtsUrlRaw, llmTtsModeRaw, llmTtsPythonRaw, llmTtsScriptRaw,
+                   followUpRaw, llmTtsInstructRaw] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
                 invoke<string>("db_read", { key: "intent_backend" }),
@@ -349,7 +441,15 @@
                 invoke<string>("db_read", { key: "llm_max_tokens" }),
                 invoke<string>("db_read", { key: "llm_thinking" }),
                 invoke<string>("db_read", { key: "llm_system_prompt" }),
-                invoke<string>("db_read", { key: "llm_allow_remote" })
+                invoke<string>("db_read", { key: "llm_allow_remote" }),
+
+                invoke<string>("db_read", { key: "llm_speak" }),
+                invoke<string>("db_read", { key: "llm_tts_url" }),
+                invoke<string>("db_read", { key: "llm_tts_mode" }),
+                invoke<string>("db_read", { key: "llm_tts_python" }),
+                invoke<string>("db_read", { key: "llm_tts_script" }),
+                invoke<string>("db_read", { key: "follow_up_secs" }),
+                invoke<string>("db_read", { key: "llm_tts_instruct" })
             ])
 
             selectedMicrophone = mic
@@ -375,6 +475,19 @@
             llmSystemPrompt = llmSystemPromptRaw
             llmAllowRemote = llmAllowRemoteRaw === "true"
 
+            // an older app.db has none of these keys and db_read answers "".
+            // Speaking defaults ON, so "" must not read as false - only an
+            // explicit "false" turns it off.
+            llmSpeak = llmSpeakRaw !== "false"
+            llmTtsUrl = llmTtsUrlRaw
+            llmTtsMode = llmTtsModeRaw === "sentence" ? "sentence" : "stream"
+            llmTtsPython = llmTtsPythonRaw
+            llmTtsScript = llmTtsScriptRaw
+            // "" from an older app.db must not read as 0, which would
+            // silently disable a feature nobody turned off
+            followUpSecs = followUpRaw === "" ? 8 : (parseInt(followUpRaw) || 0)
+            llmTtsInstruct = llmTtsInstructRaw
+
             // never hold a value that is not in its option list: NativeSelect
             // shows option[0] while the variable keeps the stale id (it renders
             // selected={item.value === value}), and Save writes the stale id back.
@@ -394,6 +507,12 @@
             selectedIntentRecognitionEngine = clamp(selectedIntentRecognitionEngine, intentBackends)
             selectedSlotExtractionEngine = clamp(selectedSlotExtractionEngine, slotsBackends)
             selectedVad = clamp(selectedVad, vadBackends)
+
+            // Not awaited: the list is a convenience, and a server that is not
+            // running answers only after a connect timeout. Awaiting it would
+            // hold the whole screen blank for that long over a field the user
+            // can still type into.
+            if (llmEnabled) fetchLlmModels()
         } catch (err) {
             console.error("failed to load settings:", err)
         }
@@ -664,13 +783,38 @@
 
         <Space h="md" />
 
-        <TextInput
-            label={t('settings-llm-model')}
-            description={t('settings-llm-model-desc')}
-            variant="filled"
-            autocomplete="off"
-            bind:value={llmModel}
-        />
+        <InputWrapper label={t('settings-llm-model')}>
+            <Text size="sm" color="gray">{t('settings-llm-model-desc')}</Text>
+            <Space h="xs" />
+            {#if llmModels.length > 0}
+                <NativeSelect
+                    data={llmModels.map((m) => ({ label: m, value: m }))}
+                    variant="filled"
+                    bind:value={llmModel}
+                />
+            {:else}
+                <TextInput variant="filled" autocomplete="off" bind:value={llmModel} />
+            {/if}
+            <Space h="xs" />
+            <Button
+                size="xs"
+                variant="light"
+                color="gray"
+                on:click={fetchLlmModels}
+                disabled={llmModelsLoading}
+            >
+                {llmModelsLoading
+                    ? t('settings-llm-models-loading')
+                    : t('settings-llm-models-refresh')}
+            </Button>
+            {#if llmModelsError}
+                <Space h="xs" />
+                <Text size="sm" color="red">{llmModelsError}</Text>
+            {:else if llmModelsAsked && llmModels.length === 0}
+                <Space h="xs" />
+                <Text size="sm" color="orange">{t('settings-llm-models-empty')}</Text>
+            {/if}
+        </InputWrapper>
 
         <Space h="md" />
 
@@ -724,12 +868,123 @@
 
         <Space h="xl" />
 
-        <InputWrapper label={t('settings-openai-key')}>
-            <Text size="sm" color="gray">{t('settings-openai-key-desc')}</Text>
+        <InputWrapper label={t('settings-llm-speak')}>
+            <Text size="sm" color="gray">{t('settings-llm-speak-desc')}</Text>
+            <Space h="xs" />
+            <Switch
+                label={llmSpeak ? t('settings-enabled') : t('settings-disabled')}
+                bind:checked={llmSpeak}
+            />
+        </InputWrapper>
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-llm-tts-url')}>
+            <Text size="sm" color="gray">{t('settings-llm-tts-url-desc')}</Text>
+            <Space h="xs" />
+            <TextInput
+                placeholder={DEFAULT_LLM_TTS_URL}
+                variant="filled"
+                bind:value={llmTtsUrl}
+                error={llmTtsUrlBad}
+            />
+            {#if llmTtsUrlBad}
+                <Space h="xs" />
+                <Text size="sm" color="red">{t('settings-llm-tts-url-bad')}</Text>
+            {/if}
+            <Space h="xs" />
+            <Button
+                size="xs"
+                variant="light"
+                color="gray"
+                on:click={checkSidecar}
+                disabled={sidecarChecking}
+            >
+                {sidecarChecking
+                    ? t('settings-llm-tts-checking')
+                    : t('settings-llm-tts-check')}
+            </Button>
+            {#if sidecarError}
+                <Space h="xs" />
+                <Text size="sm" color="red">{sidecarError}</Text>
+            {:else if sidecarStatus}
+                <Space h="xs" />
+                <Text size="sm" color="teal">
+                    {t('settings-llm-tts-ok')}: {sidecarStatus.model}{sidecarStatus.sample_rate
+                        ? `, ${sidecarStatus.sample_rate} ${t('settings-llm-tts-hz')}`
+                        : ""}
+                </Text>
+            {/if}
+        </InputWrapper>
+
+        <Space h="md" />
+
+        <NativeSelect
+            data={[
+                { label: t('settings-llm-tts-mode-stream'), value: "stream" },
+                { label: t('settings-llm-tts-mode-sentence'), value: "sentence" }
+            ]}
+            label={t('settings-llm-tts-mode')}
+            description={t('settings-llm-tts-mode-desc')}
+            variant="filled"
+            bind:value={llmTtsMode}
+        />
+
+        <Space h="md" />
+
+        <Accordion>
+            <Accordion.Item value="tts-launcher">
+                <div slot="control">{t('settings-llm-tts-advanced')}</div>
+
+                <Text size="sm" color="gray">{t('settings-llm-tts-advanced-desc')}</Text>
+                <Space h="sm" />
+
+                <InputWrapper label={t('settings-llm-tts-python')}>
+                    <Text size="sm" color="gray">{t('settings-llm-tts-python-desc')}</Text>
+                    <Space h="xs" />
+                    <TextInput variant="filled" autocomplete="off" bind:value={llmTtsPython} />
+                </InputWrapper>
+
+                <Space h="md" />
+
+                <InputWrapper label={t('settings-llm-tts-script')}>
+                    <Text size="sm" color="gray">{t('settings-llm-tts-script-desc')}</Text>
+                    <Space h="xs" />
+                    <TextInput variant="filled" autocomplete="off" bind:value={llmTtsScript} />
+                    {#if llmTtsHalfConfigured}
+                        <Space h="xs" />
+                        <Text size="sm" color="orange">{t('settings-llm-tts-half')}</Text>
+                    {/if}
+                </InputWrapper>
+            </Accordion.Item>
+        </Accordion>
+
+        <Space h="md" />
+
+        <Textarea
+            label={t('settings-llm-tts-instruct')}
+            description={t('settings-llm-tts-instruct-desc')}
+            variant="filled"
+            rows={2}
+            bind:value={llmTtsInstruct}
+        />
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-follow-up')}>
+            <Text size="sm" color="gray">{t('settings-follow-up-desc')}</Text>
+            <Space h="xs" />
+            <NumberInput min={0} max={120} step={1} variant="filled" bind:value={followUpSecs} />
+        </InputWrapper>
+
+        <Space h="xl" />
+
+        <InputWrapper label={t('settings-api-key')}>
+            <Text size="sm" color="gray">{t('settings-api-key-desc')}</Text>
             <Space h="sm" />
             <PasswordInput
                 icon={Code}
-                placeholder={t('settings-openai-key')}
+                placeholder={t('settings-api-key')}
                 variant="filled"
                 autocomplete="off"
                 bind:value={apiKeyOpenai}

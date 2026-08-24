@@ -7,7 +7,13 @@ repository.workspace = true
 edition.workspace = true
 
 [dependencies]
-jarvis-core = { path = "../jarvis-core", default-features = false }
+# "llm" carries the OpenAI-compatible client and the speech sidecar client.
+# The settings screen needs both to ask a server what models it has and to
+# check whether the sidecar is up - and asking through the core keeps the
+# offline-first gate in one place instead of a second copy in TypeScript.
+# jarvis-app already enables this feature, and resolver 2 unifies features
+# across a workspace build, so the core is not rebuilt for it.
+jarvis-core = { path = "../jarvis-core", default-features = false, features = ["llm"] }
 tauri = { version = "2", features = [] } # v1: "shell-open", "dialog-message", "path-all"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
