@@ -15,6 +15,12 @@ enum VadState {
 }
 
 pub fn start(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Result<(), ()> {
+    // Before anything else: a previous run may have died while other
+    // applications were turned down, and their volumes are not ours to leave
+    // sitting there. The worker puts back anything it finds recorded.
+    #[cfg(target_os = "windows")]
+    jarvis_core::ducking::init();
+
     warm_speech(rt);
     main_loop(text_cmd_rx, rt)
 }
@@ -123,6 +129,7 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
                 if let Some(_keyword_index) = listener::data_callback(&frame_buffer) {
                     // WAKE WORD DETECTED!
                     info!("Wake word activated!");
+                    duck_others();
                     ipc::send(IpcEvent::WakeWordDetected);
                     
                     stt::reset_wake_recognizer();
@@ -160,6 +167,11 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
                     ipc::send(IpcEvent::Listening);
                     recognize_command(&mut frame_buffer, &rt, frame_length, sample_rate,
                                       true, wake_segment_pending);
+
+                    // The turn is over here, answer and all: recognize_command
+                    // holds its window open while llm_busy() is true, which
+                    // covers the model thinking and the answer being spoken.
+                    unduck_others();
 
                     // reset state after command
                     vad_state = VadState::WaitingForVoice;
@@ -738,6 +750,35 @@ fn conversation_settings() -> Option<(usize, Duration)> {
     ))
 }
 
+// Quiet everything else for the length of a turn.
+//
+// Called on the wake word rather than when the answer starts, so the music is
+// already out of the way while the command is being spoken - which is also why
+// it helps the recogniser and not only the listener.
+#[cfg(target_os = "windows")]
+fn duck_others() {
+    let Some(db) = DB.get() else { return };
+    let (on, level) = {
+        let s = db.read();
+        (s.duck_others, s.duck_level)
+    };
+    if on {
+        jarvis_core::ducking::duck(level as f32 / 100.0);
+    }
+}
+
+// Put it back. Unconditional on purpose: if the setting was switched off in
+// the middle of a turn, what is already ducked still has to come back up.
+#[cfg(target_os = "windows")]
+fn unduck_others() {
+    jarvis_core::ducking::restore();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn duck_others() {}
+#[cfg(not(target_os = "windows"))]
+fn unduck_others() {}
+
 // Forget the thread. Said out loud, or asked for from the window.
 pub fn forget_conversation() {
     let mut c = CONVERSATION.lock();
@@ -981,6 +1022,10 @@ pub fn close(code: i32) {
     // a sidecar left behind holds both the port and the GPU while the next run
     // wonders what has them
     speech::supervisor::shutdown();
+    // and the same for other applications' volumes - they are not ours to
+    // leave turned down
+    #[cfg(target_os = "windows")]
+    jarvis_core::ducking::restore_blocking();
     std::process::exit(code);
 }
 #[cfg(test)]

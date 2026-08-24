@@ -45,6 +45,9 @@ reqwest = { version = "0.13.1", features = ["blocking", "json"] }
 tempfile = "^3.24"
 winrt-notification = "0.5"
 windows-registry = "0.6"
+# per-application volume lives in the audio session API. Already in the
+# tree at this version, so the features are all this costs.
+windows = { version = "0.61", features = ["Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant"] }
 
 fastembed = { version = "^5.8.1", default-features = false, features = ["ort-download-binaries"] }
 ort = { version = "=2.0.0-rc.11" }

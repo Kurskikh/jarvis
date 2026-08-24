@@ -180,6 +180,11 @@ fn release_audio() {
     // finds the port taken by a copy still holding the GPU.
     jarvis_core::speech::supervisor::shutdown();
 
+    // and other applications get their volume back. Same reason as the
+    // sidecar: this path exits through std::process::exit, so nothing after it
+    // runs. Blocking, because a message to the worker would never be read.
+    jarvis_core::ducking::restore_blocking();
+
     if let Err(()) = jarvis_core::recorder::stop_recording() {
         error!("Failed to stop the recorder before exiting.");
     }

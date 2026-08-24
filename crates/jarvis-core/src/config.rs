@@ -312,6 +312,19 @@ pub const LLM_SPEECH_STYLE_DIRECTIVE: &str = concat!(
 // The window opens when the assistant STOPS TALKING, not when the command
 // returns: a language model turn answers seconds later and then reads the
 // answer out, and a timer started at the command would be long gone by then.
+// Turning other applications down while the assistant is spoken to.
+//
+// On by default: it is the behaviour that makes talking over music work at
+// all, and it puts every volume back afterwards. The level is what is LEFT,
+// not what is taken - 20 means a fifth of its former loudness, which is close
+// to what Windows itself does while a call is in progress.
+pub const DEFAULT_DUCK_OTHERS: bool = true;
+pub const DEFAULT_DUCK_LEVEL: u32 = 20;
+pub const DUCK_LEVEL_MIN: u32 = 0;
+// not 100: that would leave everything exactly as it was, which is what the
+// switch above is for
+pub const DUCK_LEVEL_MAX: u32 = 90;
+
 // Dialogue memory.
 //
 // Off by default, and deliberately so. Remembering is not free: every exchange

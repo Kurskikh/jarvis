@@ -98,6 +98,13 @@ pub struct Settings {
     #[serde(default = "default_llm_speak")]
     pub llm_speak: bool,
 
+    // quiet everything else while a turn is in progress?
+    #[serde(default = "default_duck_others")]
+    pub duck_others: bool,
+    // what is LEFT, as a percentage of the volume the application had
+    #[serde(default = "default_duck_level")]
+    pub duck_level: u32,
+
     // does the assistant remember the conversation between questions?
     #[serde(default = "default_llm_history")]
     pub llm_history: bool,
@@ -150,6 +157,8 @@ fn default_llm_thinking() -> String { config::DEFAULT_LLM_THINKING.to_string() }
 fn default_llm_system_prompt() -> String { config::DEFAULT_LLM_SYSTEM_PROMPT.to_string() }
 fn default_llm_allow_remote() -> bool { config::DEFAULT_LLM_ALLOW_REMOTE }
 fn default_llm_speak() -> bool { config::DEFAULT_LLM_SPEAK }
+fn default_duck_others() -> bool { config::DEFAULT_DUCK_OTHERS }
+fn default_duck_level() -> u32 { config::DEFAULT_DUCK_LEVEL }
 fn default_llm_history() -> bool { config::DEFAULT_LLM_HISTORY }
 fn default_llm_history_turns() -> u32 { config::DEFAULT_LLM_HISTORY_TURNS }
 fn default_llm_history_idle_min() -> u32 { config::DEFAULT_LLM_HISTORY_IDLE_MIN }
@@ -286,6 +295,8 @@ impl Settings {
             "llm_system_prompt"         => Some(self.llm_system_prompt.clone()),
             "llm_allow_remote"          => Some(self.llm_allow_remote.to_string()),
             "llm_speak"                 => Some(self.llm_speak.to_string()),
+            "duck_others"               => Some(self.duck_others.to_string()),
+            "duck_level"                => Some(self.duck_level.to_string()),
             "llm_history"               => Some(self.llm_history.to_string()),
             "llm_history_turns"         => Some(self.llm_history_turns.to_string()),
             "llm_history_idle_min"      => Some(self.llm_history_idle_min.to_string()),
@@ -446,6 +457,22 @@ impl Settings {
                     _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
                 };
             }
+            "duck_others" => {
+                self.duck_others = match val.to_lowercase().as_str() {
+                    "true"  => true,
+                    "false" => false,
+                    _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
+                };
+            }
+            "duck_level" => {
+                let n = val.parse::<u32>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                if !(config::DUCK_LEVEL_MIN..=config::DUCK_LEVEL_MAX).contains(&n) {
+                    return Err(format!("duck level must be {}-{}, got: '{}'",
+                                       config::DUCK_LEVEL_MIN, config::DUCK_LEVEL_MAX, val));
+                }
+                self.duck_level = n;
+            }
             "llm_history" => {
                 self.llm_history = match val.to_lowercase().as_str() {
                     "true"  => true,
@@ -577,6 +604,8 @@ impl Settings {
             "llm_system_prompt",
             "llm_allow_remote",
             "llm_speak",
+            "duck_others",
+            "duck_level",
             "llm_history",
             "llm_history_turns",
             "llm_history_idle_min",
@@ -672,6 +701,8 @@ impl Default for Settings {
             llm_system_prompt: config::DEFAULT_LLM_SYSTEM_PROMPT.to_string(),
             llm_allow_remote: config::DEFAULT_LLM_ALLOW_REMOTE,
             llm_speak: config::DEFAULT_LLM_SPEAK,
+            duck_others: config::DEFAULT_DUCK_OTHERS,
+            duck_level: config::DEFAULT_DUCK_LEVEL,
             llm_history: config::DEFAULT_LLM_HISTORY,
             llm_history_turns: config::DEFAULT_LLM_HISTORY_TURNS,
             llm_history_idle_min: config::DEFAULT_LLM_HISTORY_IDLE_MIN,

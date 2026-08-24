@@ -3329,6 +3329,7 @@ dependencies = [
  "toml 0.9.11+spec-1.1.0",
  "unic-langid",
  "vosk",
+ "windows 0.61.3",
  "windows-registry",
  "winrt-notification",
 ]

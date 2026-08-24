@@ -242,6 +242,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ask_llm(arg).await;
                 }
             }
+            // the harness for the mixer ducking. It changes other
+            // applications' volumes, so being able to look at them before and
+            // after is the difference between measuring and hoping.
+            "mixer" => {
+                let sessions = jarvis_core::ducking::snapshot();
+                if sessions.is_empty() {
+                    println!("  Nothing is playing.");
+                } else {
+                    println!("
+[ Mixer ]");
+                    for (id, v) in sessions {
+                        let name = id.rsplit(std::path::MAIN_SEPARATOR).next().unwrap_or(&id).to_string();
+                        println!("  {:>6.1}%  {}", v * 100.0, name);
+                    }
+                    println!();
+                }
+            }
+            "duck" => {
+                let level = arg.trim().parse::<f32>().unwrap_or(20.0) / 100.0;
+                jarvis_core::ducking::duck(level);
+                println!("  Ducking to {:.0}% - run 'mixer' to see it.", level * 100.0);
+            }
+            "unduck" => {
+                jarvis_core::ducking::restore();
+                println!("  Restoring - run 'mixer' to see it.");
+            }
             "reload" => {
                 match jarvis_core::reload::reload_all().await {
                     Ok(r) => {

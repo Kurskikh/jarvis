@@ -178,9 +178,11 @@
     let llmTtsScript = ""
     let llmTtsInstruct = ""
     let followUpSecs = 8
+    let duckOthers = true
     let llmHistory = false
     let llmHistoryTurns = 4
     let llmHistoryIdleMin = 5
+    let duckLevel = 20
 
     // mirrors is_loopback_url in crates/jarvis-core/src/db/structs.rs. purely an
     // early warning next to the field - the real gate is Settings::validate_change(),
@@ -314,6 +316,8 @@
                     llm_history: llmHistory.toString(),
                     llm_history_turns: llmHistoryTurns.toString(),
                     llm_history_idle_min: llmHistoryIdleMin.toString(),
+                    duck_others: duckOthers.toString(),
+                    duck_level: duckLevel.toString(),
                     follow_up_secs: followUpToSave.toString()
                 }
             })
@@ -427,7 +431,8 @@
                    llmTimeoutRaw, llmMaxTokensRaw, llmThinkingRaw, llmSystemPromptRaw, llmAllowRemoteRaw,
                    llmSpeakRaw, llmTtsUrlRaw, llmTtsModeRaw, llmTtsPythonRaw, llmTtsScriptRaw,
                    followUpRaw, llmTtsInstructRaw,
-                   llmHistoryRaw, llmHistoryTurnsRaw, llmHistoryIdleRaw] = await Promise.all([
+                   llmHistoryRaw, llmHistoryTurnsRaw, llmHistoryIdleRaw,
+                   duckOthersRaw, duckLevelRaw] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
                 invoke<string>("db_read", { key: "intent_backend" }),
@@ -459,7 +464,9 @@
                 invoke<string>("db_read", { key: "llm_tts_instruct" }),
                 invoke<string>("db_read", { key: "llm_history" }),
                 invoke<string>("db_read", { key: "llm_history_turns" }),
-                invoke<string>("db_read", { key: "llm_history_idle_min" })
+                invoke<string>("db_read", { key: "llm_history_idle_min" }),
+                invoke<string>("db_read", { key: "duck_others" }),
+                invoke<string>("db_read", { key: "duck_level" })
             ])
 
             selectedMicrophone = mic
@@ -502,6 +509,12 @@
             llmHistory = llmHistoryRaw === "true"
             llmHistoryTurns = parseInt(llmHistoryTurnsRaw) || 4
             llmHistoryIdleMin = parseInt(llmHistoryIdleRaw) || 5
+            // ducking defaults ON, so "" from an older app.db must not read as
+            // false - only an explicit "false" turns it off
+            duckOthers = duckOthersRaw !== "false"
+            // 0 is a legitimate level (full silence), so "" must not fall
+            // through to it by way of ||
+            duckLevel = duckLevelRaw === "" ? 20 : (parseInt(duckLevelRaw) || 0)
 
             // never hold a value that is not in its option list: NativeSelect
             // shows option[0] while the variable keeps the stale id (it renders
@@ -620,6 +633,28 @@
                 {/if}
             </div>
         </div>
+
+        <Space h="xl" />
+
+        <InputWrapper label={t('settings-duck')}>
+            <Text size="sm" color="gray">{t('settings-duck-desc')}</Text>
+            <Space h="xs" />
+            <Switch
+                color="green"
+                label={duckOthers ? t('settings-enabled') : t('settings-disabled')}
+                bind:checked={duckOthers}
+            />
+        </InputWrapper>
+
+        {#if duckOthers}
+            <Space h="md" />
+
+            <InputWrapper label={t('settings-duck-level')}>
+                <Text size="sm" color="gray">{t('settings-duck-level-desc')}</Text>
+                <Space h="xs" />
+                <NumberInput min={0} max={90} step={5} variant="filled" bind:value={duckLevel} />
+            </InputWrapper>
+        {/if}
     </Tabs.Tab>
 
     <Tabs.Tab label={t('settings-devices')} icon={Mix}>

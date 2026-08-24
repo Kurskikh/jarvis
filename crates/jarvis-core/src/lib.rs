@@ -13,6 +13,11 @@ pub mod audio;
 pub mod commands;
 pub mod config;
 pub mod db;
+
+// turning other applications down while the assistant is spoken to. Windows
+// only, because per-application volume is a Windows concept.
+#[cfg(target_os = "windows")]
+pub mod ducking;
 pub mod i18n;
 
 #[cfg(feature = "jarvis_app")]
