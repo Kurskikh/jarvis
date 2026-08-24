@@ -59,14 +59,61 @@ fn still_ours(current: f32, taken: &Taken) -> bool {
     (current - taken.set).abs() <= SAME
 }
 
+// The folder this executable runs from, without the drive letter, lowercased.
+//
+// A session identifier spells the executable out as a device path -
+// \Device\HarddiskVolume14\jarvis\target\release\jarvis-gui.exe - so the
+// drive letter of our own path has no counterpart there and the tail is what
+// can be compared.
+//
+// None when the tail would be too short to mean anything: matching on "\" or
+// "\bin" would call half the machine ours.
+fn own_dir_tail() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let full = dir.to_string_lossy().to_lowercase();
+    let tail = match full.find(':') {
+        Some(i) => full[i + 1..].to_string(),
+        None => full,
+    };
+    // at least two named segments, e.g. "\jarvis\release"
+    if tail.trim_matches('\\').split('\\').filter(|s| !s.is_empty()).count() < 2 {
+        return None;
+    }
+    Some(tail)
+}
+
+// Is this session one of ours?
+//
+// "Ours" is more than this process. The assistant runs as several executables
+// out of one folder - the listener speaks the answers, the window plays voice
+// previews - and to anyone listening they are all the assistant. Excluding
+// only our own process id left the window being ducked along with the music,
+// which is exactly what the feature exists to avoid.
+fn is_ours(id: &str, pid: u32, own_pid: u32, own_dir: Option<&str>) -> bool {
+    if pid == own_pid {
+        return true;
+    }
+    match own_dir {
+        Some(dir) => id.to_lowercase().contains(dir),
+        None => false,
+    }
+}
+
 // Sessions we have no business touching.
 //
-// Our own, or the answer would duck itself. The Windows system sounds, which
-// are notification blips nobody wants to hear at a different volume tomorrow.
-// And anything not currently making a sound: an idle session's volume is a
-// setting the user chose for next time, not noise competing with the mic.
-fn skip(pid: u32, own_pid: u32, is_system_sounds: bool, active: bool) -> bool {
-    pid == own_pid || is_system_sounds || !active
+// Ours, or the answer ducks itself. The Windows system sounds, which are
+// notification blips nobody wants to hear at a different volume tomorrow. And
+// anything not currently making a sound: an idle session's volume is a setting
+// the user chose for next time, not noise competing with the mic.
+fn skip(id: &str, pid: u32, own_pid: u32, own_dir: Option<&str>, is_system_sounds: bool, active: bool) -> bool {
+    is_ours(id, pid, own_pid, own_dir) || is_system_sounds || !active
+}
+
+// The readable part of a session identifier: the executable's file name.
+fn short_name(id: &str) -> &str {
+    let after_path = id.rsplit('\\').next().unwrap_or(id);
+    after_path.split("%b").next().unwrap_or(after_path)
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -126,6 +173,7 @@ struct Session {
 // function, on a thread that initialised COM in worker(). Nothing crosses a
 // thread boundary.
 unsafe fn live_sessions(own_pid: u32) -> Result<Vec<Session>, String> {
+    let own_dir = own_dir_tail();
     let enumerator: IMMDeviceEnumerator =
         CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
     let device = enumerator
@@ -150,12 +198,16 @@ unsafe fn live_sessions(own_pid: u32) -> Result<Vec<Session>, String> {
         // first run left the music sitting at 100%.
         let is_system = control2.IsSystemSoundsSession() == windows::Win32::Foundation::S_OK;
         let active = control.GetState().map(|s| s == AudioSessionStateActive).unwrap_or(false);
-        if skip(pid, own_pid, is_system, active) {
+
+        // the identifier is needed BEFORE the decision now: whether a session
+        // is one of ours is answered by the path spelled out inside it
+        let Ok(id) = control2.GetSessionInstanceIdentifier() else { continue };
+        let Ok(id) = id.to_string() else { continue };
+
+        if skip(&id, pid, own_pid, own_dir.as_deref(), is_system, active) {
             continue;
         }
 
-        let Ok(id) = control2.GetSessionInstanceIdentifier() else { continue };
-        let Ok(id) = id.to_string() else { continue };
         let Ok(volume) = control2.cast::<ISimpleAudioVolume>() else { continue };
         out.push(Session { id, volume });
     }
@@ -167,7 +219,11 @@ unsafe fn do_duck(level: f32) -> Result<Vec<Taken>, String> {
     let mut taken = Vec::new();
 
     let live = live_sessions(own)?;
-    debug!("{} session(s) making a sound and eligible", live.len());
+    debug!(
+        "{} session(s) making a sound and not ours: {}",
+        live.len(),
+        live.iter().map(|s| short_name(&s.id)).collect::<Vec<_>>().join(", ")
+    );
     for s in live {
         let Ok(was) = s.volume.GetMasterVolume() else { continue };
         let set = was * level;
@@ -430,26 +486,64 @@ mod tests {
         assert!(still_ours(0.2 + 0.0005, &taken(0.2)));
     }
 
+    // a real identifier, shortened; the device path is what Windows gives
+    const GUI: &str = r"{0.0.0.00000000}.{d24c05d6}|\Device\HarddiskVolume14\jarvis\target\release\jarvis-gui.exe%b{0000}|1%b69980";
+    const MUSIC: &str = r"{0.0.0.00000000}.{d24c05d6}|\Device\HarddiskVolume2\Users\aleks\AppData\Local\Programs\YandexMusic\Music.exe%b{0000}|1%b14896";
+    const OURS: Option<&str> = Some(r"\jarvis\target\release");
+
     #[test]
     fn our_own_session_is_never_touched() {
         // otherwise the answer ducks itself and the feature is self-defeating
-        assert!(skip(42, 42, false, true));
+        assert!(skip(MUSIC, 42, 42, OURS, false, true));
+    }
+
+    #[test]
+    fn another_of_our_executables_is_never_touched() {
+        // the window is a different process with a different id, and to
+        // anyone listening it is still the assistant. Excluding only our own
+        // process ducked it along with the music.
+        assert!(is_ours(GUI, 69980, 42, OURS));
+        assert!(skip(GUI, 69980, 42, OURS, false, true));
+    }
+
+    #[test]
+    fn a_stranger_from_another_folder_is_not_ours() {
+        assert!(!is_ours(MUSIC, 14896, 42, OURS));
+    }
+
+    #[test]
+    fn without_a_folder_to_compare_only_our_own_process_is_spared() {
+        // a path too short to mean anything must not make half the machine
+        // ours - better to duck our own window than to duck nothing
+        assert!(is_ours(GUI, 42, 42, None));
+        assert!(!is_ours(GUI, 69980, 42, None));
+    }
+
+    #[test]
+    fn the_comparison_ignores_case() {
+        assert!(is_ours(&GUI.to_uppercase(), 69980, 42, OURS));
     }
 
     #[test]
     fn system_sounds_are_left_alone() {
-        assert!(skip(7, 42, true, true));
+        assert!(skip(MUSIC, 7, 42, OURS, true, true));
     }
 
     #[test]
     fn a_silent_application_is_left_alone() {
         // an idle session's volume is a setting chosen for next time, not
         // noise competing with the microphone
-        assert!(skip(7, 42, false, false));
+        assert!(skip(MUSIC, 7, 42, OURS, false, false));
     }
 
     #[test]
     fn anything_else_playing_is_fair_game() {
-        assert!(!skip(7, 42, false, true));
+        assert!(!skip(MUSIC, 7, 42, OURS, false, true));
+    }
+
+    #[test]
+    fn the_short_name_is_the_executable() {
+        assert_eq!(short_name(GUI), "jarvis-gui.exe");
+        assert_eq!(short_name(MUSIC), "Music.exe");
     }
 }
