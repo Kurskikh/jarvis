@@ -53,6 +53,11 @@ pub mod lua;
 #[cfg(feature = "llm")]
 pub mod llm;
 
+// speaking those answers out loud. Same feature gate: it exists to give the
+// language model a voice, and it needs the same reqwest and tokio.
+#[cfg(feature = "llm")]
+pub mod speech;
+
 // shared statics
 // pub static APP_DIR: Lazy<PathBuf> = Lazy::new(|| std::env::current_dir().unwrap());
 pub static APP_DIR: Lazy<PathBuf> = Lazy::new(|| {

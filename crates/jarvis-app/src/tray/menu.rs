@@ -168,6 +168,9 @@ pub fn build(settings: &SettingsManager) -> TrayMenu {
     let _ = menu.append(&vad_sub);
     let _ = menu.append(&gain_toggle);
     let _ = menu.append(&PredefinedMenuItem::separator());
+    // the microphone is deaf while the assistant speaks, so an answer that is
+    // running long has to be stoppable by hand
+    let _ = menu.append(&MenuItem::with_id("stop_speaking", i18n::t("tray-stop-speaking"), true, None));
     let _ = menu.append(&MenuItem::with_id("restart", i18n::t("tray-restart"), true, None));
     let _ = menu.append(&MenuItem::with_id("settings", i18n::t("tray-settings"), true, None));
     let _ = menu.append(&MenuItem::with_id("exit", i18n::t("tray-exit"), true, None));

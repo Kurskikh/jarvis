@@ -92,6 +92,40 @@ pub struct Settings {
     #[serde(default = "default_llm_allow_remote")]
     pub llm_allow_remote: bool,
 
+    // speak the answer, not just write it. Independent of llm_enabled on
+    // purpose: turning the voice off while keeping answers is a reasonable
+    // thing to want at two in the morning.
+    #[serde(default = "default_llm_speak")]
+    pub llm_speak: bool,
+
+    #[serde(default = "default_llm_tts_url")]
+    pub llm_tts_url: String,
+
+    #[serde(default = "default_llm_tts_mode")]
+    pub llm_tts_mode: String,
+
+    // interpreter to start the speech sidecar with. Empty = only connect to
+    // one that is already running.
+    #[serde(default = "default_llm_tts_python")]
+    pub llm_tts_python: String,
+
+    // the sidecar script itself. Kept separate from the interpreter rather
+    // than derived from it: the two live wherever the owner installed
+    // CosyVoice, and guessing one from the other would fail silently on any
+    // layout but the one it was guessed against.
+    #[serde(default)]
+    pub llm_tts_script: String,
+
+    // how the synthesiser should speak, not what it should say. See
+    // config::DEFAULT_LLM_TTS_INSTRUCT for what was measured about it.
+    #[serde(default)]
+    pub llm_tts_instruct: String,
+
+    // seconds to keep listening after the assistant finishes speaking, so the
+    // next question needs no wake word. 0 turns it off.
+    #[serde(default = "default_follow_up_secs")]
+    pub follow_up_secs: u64,
+
     pub api_keys: ApiKeys,
 }
 
@@ -107,6 +141,11 @@ fn default_llm_max_tokens() -> u32 { config::DEFAULT_LLM_MAX_TOKENS }
 fn default_llm_thinking() -> String { config::DEFAULT_LLM_THINKING.to_string() }
 fn default_llm_system_prompt() -> String { config::DEFAULT_LLM_SYSTEM_PROMPT.to_string() }
 fn default_llm_allow_remote() -> bool { config::DEFAULT_LLM_ALLOW_REMOTE }
+fn default_llm_speak() -> bool { config::DEFAULT_LLM_SPEAK }
+fn default_llm_tts_url() -> String { config::DEFAULT_LLM_TTS_URL.to_string() }
+fn default_llm_tts_mode() -> String { config::DEFAULT_LLM_TTS_MODE.to_string() }
+fn default_llm_tts_python() -> String { config::DEFAULT_LLM_TTS_PYTHON.to_string() }
+fn default_follow_up_secs() -> u64 { config::DEFAULT_FOLLOW_UP_SECS }
 
 // characters that must not appear in an endpoint url, because the WHATWG
 // parser inside `url` - the one reqwest actually resolves with - reads them
@@ -235,6 +274,13 @@ impl Settings {
             "llm_thinking"              => Some(self.llm_thinking.clone()),
             "llm_system_prompt"         => Some(self.llm_system_prompt.clone()),
             "llm_allow_remote"          => Some(self.llm_allow_remote.to_string()),
+            "llm_speak"                 => Some(self.llm_speak.to_string()),
+            "llm_tts_url"               => Some(self.llm_tts_url.clone()),
+            "llm_tts_mode"              => Some(self.llm_tts_mode.clone()),
+            "llm_tts_python"            => Some(self.llm_tts_python.clone()),
+            "llm_tts_script"            => Some(self.llm_tts_script.clone()),
+            "llm_tts_instruct"          => Some(self.llm_tts_instruct.clone()),
+            "follow_up_secs"            => Some(self.follow_up_secs.to_string()),
             "api_key__openai"           => Some(self.api_keys.openai.clone()),
             _ => None,
         }
@@ -379,6 +425,68 @@ impl Settings {
                     _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
                 };
             }
+            "llm_speak" => {
+                self.llm_speak = match val.to_lowercase().as_str() {
+                    "true"  => true,
+                    "false" => false,
+                    _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
+                };
+            }
+            "llm_tts_url" => {
+                // The sidecar is a local process by definition - it exists
+                // because the model is too big to ship - so unlike the
+                // language model endpoint there is no remote case to allow.
+                // A non-loopback address here would send every answer the
+                // assistant speaks to somebody else's machine.
+                let url = val.trim().trim_end_matches('/');
+                if url.is_empty() {
+                    return Err("speech sidecar url must not be empty".to_string());
+                }
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    return Err(format!(
+                        "speech sidecar url must start with http:// or https://: '{}'", val));
+                }
+                // is_loopback_url already rejects the characters that make a
+                // url mean one thing here and another to reqwest, so the two
+                // checks cannot disagree. Unlike llm_base_url this is enforced
+                // in set() rather than validate(): there is no allow-remote
+                // companion setting to make it a cross-field rule, because
+                // there is no legitimate remote case.
+                if !is_loopback_url(url) {
+                    return Err(format!(
+                        "the speech sidecar must be local: '{}' is not a loopback address", val));
+                }
+                self.llm_tts_url = url.to_string();
+            }
+            "llm_tts_mode" => {
+                let mode = val.trim().to_lowercase();
+                if !config::LLM_TTS_MODES.contains(&mode.as_str()) {
+                    return Err(format!("expected one of {:?}, got: '{}'",
+                                       config::LLM_TTS_MODES, val));
+                }
+                self.llm_tts_mode = mode;
+            }
+            "llm_tts_python" => {
+                // not checked for existence here: the path is validated when
+                // the sidecar is started, where a missing interpreter can be
+                // reported together with the command that failed
+                self.llm_tts_python = val.trim().to_string();
+            }
+            "llm_tts_script" => {
+                self.llm_tts_script = val.trim().to_string();
+            }
+            "llm_tts_instruct" => {
+                self.llm_tts_instruct = val.trim().to_string();
+            }
+            "follow_up_secs" => {
+                let secs: u64 = val.trim().parse()
+                    .map_err(|_| format!("expected a whole number of seconds, got: '{}'", val))?;
+                if secs > config::FOLLOW_UP_SECS_MAX {
+                    return Err(format!("at most {} seconds, got: {}",
+                                       config::FOLLOW_UP_SECS_MAX, secs));
+                }
+                self.follow_up_secs = secs;
+            }
             "api_key__openai" => {
                 self.api_keys.openai = val.to_string();
             }
@@ -427,6 +535,13 @@ impl Settings {
             "llm_thinking",
             "llm_system_prompt",
             "llm_allow_remote",
+            "llm_speak",
+            "llm_tts_url",
+            "llm_tts_mode",
+            "llm_tts_python",
+            "llm_tts_script",
+            "llm_tts_instruct",
+            "follow_up_secs",
             "api_key__openai",
         ]
     }
@@ -512,6 +627,13 @@ impl Default for Settings {
             llm_thinking: config::DEFAULT_LLM_THINKING.to_string(),
             llm_system_prompt: config::DEFAULT_LLM_SYSTEM_PROMPT.to_string(),
             llm_allow_remote: config::DEFAULT_LLM_ALLOW_REMOTE,
+            llm_speak: config::DEFAULT_LLM_SPEAK,
+            llm_tts_url: config::DEFAULT_LLM_TTS_URL.to_string(),
+            llm_tts_mode: config::DEFAULT_LLM_TTS_MODE.to_string(),
+            llm_tts_python: config::DEFAULT_LLM_TTS_PYTHON.to_string(),
+            llm_tts_script: String::new(),
+            llm_tts_instruct: String::new(),
+            follow_up_secs: config::DEFAULT_FOLLOW_UP_SECS,
 
             api_keys: ApiKeys {
                 openai: String::from(""),

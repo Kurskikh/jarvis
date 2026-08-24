@@ -128,4 +128,12 @@ pub enum IpcAction {
 
     // Execute text command
     TextCommand { text: String },
+
+    // Cut short whatever the assistant is saying.
+    //
+    // The microphone is deaf while a reaction plays (audio::is_speaking), so
+    // a spoken answer cannot be interrupted by voice - there has to be a way
+    // that does not go through the microphone at all. Sent by the window and
+    // by the tray.
+    StopSpeaking,
 }

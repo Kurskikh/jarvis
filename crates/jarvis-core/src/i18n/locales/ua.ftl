@@ -3,6 +3,7 @@ app-name = JARVIS
 app-description = Голосовий асистент
 
 # ### TRAY MENU
+tray-stop-speaking = Замовкнути
 tray-restart = Перезапустити
 tray-settings = Налаштування
 tray-exit = Вихід
@@ -94,7 +95,7 @@ settings-models-not-found = Моделі не знайдено
 settings-models-hint = Помістіть моделі Vosk в папку resources/vosk
 
 # settings - openai
-settings-openai-key = Ключ OpenAI
+settings-api-key = Ключ доступу
 
 # ### COMMANDS PAGE
 commands-search = Пошук команд...
@@ -216,7 +217,10 @@ settings-llm-base-url-desc =
     Сумісна з OpenAI адреса. LM Studio: http://127.0.0.1:1234/v1
     Ollama: http://127.0.0.1:11434/v1
 settings-llm-model = Модель
-settings-llm-model-desc = Точна назва моделі, як її повідомляє сервер.
+settings-llm-model-desc = Обирається з тих, що сервер повідомляє сам. Якщо сервер не відповідає, ім’я можна ввести вручну.
+settings-llm-models-refresh = Оновити список
+settings-llm-models-loading = Питаю сервер…
+settings-llm-models-empty = Сервер відповідає, але не назвав жодної моделі — схоже, жодну не завантажено.
 settings-llm-timeout = Тайм-аут (секунди)
 settings-llm-timeout-desc = Перше завантаження моделі може тривати хвилину. Від 10 до 600.
 settings-llm-max-tokens = Ліміт токенів відповіді
@@ -229,13 +233,38 @@ settings-llm-system-prompt = Системний промпт
 settings-llm-system-prompt-desc = Надсилається перед кожним питанням. Залиште порожнім, щоб не надсилати.
 settings-llm-allow-remote = Дозволити віддалену адресу
 settings-llm-allow-remote-desc = Вимкнено — приймаються лише локальні адреси. Увімкнення надішле вашу мову на іншу машину.
+settings-llm-speak = Озвучувати відповіді
+settings-llm-speak-desc = Читати відповіді вголос голосом асистента. Потрібен запущений сайдкар синтезу; без нього відповіді лишаються текстом.
+settings-llm-tts-url = Сайдкар синтезу
+settings-llm-tts-url-desc = Де слухає сайдкар. Лише локальна адреса: сайдкар — локальний процес, надсилати мовлення назовні немає причин.
+settings-llm-tts-url-bad = Лише локальна адреса. Мовлення синтезується на цій машині й назовні не йде.
+settings-llm-tts-check = Перевірити зв’язок
+settings-llm-tts-checking = Перевіряю…
+settings-llm-tts-ok = Сайдкар відповідає
+settings-llm-tts-hz = Гц
+settings-llm-tts-mode = Режим синтезу
+settings-llm-tts-mode-desc = Потоковий починає говорити приблизно на півтори секунди раніше і значно стабільніший від відповіді до відповіді. Цілком чекає всю відповідь; лишено для порівняння.
+settings-llm-tts-mode-stream = Потоковий
+settings-llm-tts-mode-sentence = Цілком
+settings-llm-tts-python = Інтерпретатор сайдкара
+settings-llm-tts-python-desc = Python з оточення, де встановлено рушій синтезу. Заповнюйте, лише якщо хочете, щоб Джарвіс піднімав сайдкар сам.
+settings-llm-tts-script = Скрипт сайдкара
+settings-llm-tts-script-desc = Повний шлях до скрипта сайдкара. Потрібен, лише якщо заповнено інтерпретатор вище.
+settings-llm-tts-advanced = Додатково: хай Джарвіс сам запускає сайдкар
+settings-llm-tts-advanced-desc = Лишіть обидва поля порожніми, якщо запускаєте сайдкар самі — Джарвіс просто підключиться за адресою вище. Заповніть обидва, і він піднімати­ме його на старті та гаситиме на виході.
+settings-llm-tts-half = Заповнено лише одне поле з двох. Щоб Джарвіс запускав сайдкар сам, потрібні обидва; інакше очистіть обидва й запускайте сайдкар самі.
+settings-llm-tts-instruct = Інструкція голосу
+settings-llm-tts-instruct-desc = Як говорити, а не що. Порожнє поле — клонування за зразком, і це рекомендований варіант: інструкція скасовує манеру мовлення з вашого зразка й лишає тільки тембр. Заміряно: китайська інструкція працює, англійська кривить слова, російську модель зачитує вголос замість відповіді.
+settings-follow-up = Слухати після відповіді
+settings-follow-up-desc = Скільки секунд мікрофон лишається відкритим після того, як асистент договорив, щоб наступне питання можна було поставити без «Джарвіс». Відлік іде з кінця мовлення, а не з моменту питання. 0 — вимкнути.
 settings-llm-remote-blocked = Це не локальна адреса. Поки «Дозволити віддалену адресу» вимкнено, туди нічого не надсилається.
-settings-openai-key-desc = Токен для адреси вище. LM Studio: вкладка Developer. Ollama токен не потрібен.
+settings-api-key-desc = Токен для адреси вище. LM Studio — вкладка Developer. Ollama токен не потрібен.
 settings-saved-restart-hint = Асистент недоступний, тому він може продовжувати працювати з попередніми налаштуваннями. Перезапустіть його, щоб застосувати їх.
 
 # llm answer panel
 llm-thinking = Думаю...
 llm-answer = Відповідь
+llm-stop-speaking = Замовкнути
 llm-error-connect = Не вдалося зв'язатися з моделлю
 llm-error-unauthorized = Адреса відхилила токен
 llm-error-model-not-found = Модель недоступна

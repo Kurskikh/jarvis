@@ -77,14 +77,38 @@ pub fn recognize_wake_word(data: &[i16]) -> Option<(String, f32)> {
 }
 
 
-pub fn recognize_speech(data: &[i16]) -> Option<String> {
+// The transcript AND how sure the recogniser was of it.
+//
+// The score used to be dropped on the floor here, which left the command path
+// with no way at all to tell a clear utterance from a guess - a half-heard
+// fragment was executed with exactly the authority of a spoken command. It is
+// returned and logged now; see the note in app.rs on why it is not yet a gate.
+//
+// Vosk's per-alternative confidence is a summed log-likelihood, so it grows
+// with the length of what was said and cannot be compared against a fixed
+// number without normalising. That is why this reports rather than decides.
+pub fn recognize_speech(data: &[i16]) -> Option<(String, f32)> {
     let mut recognizer = SPEECH_RECOGNIZER.get()?.lock();
-    
+
     match recognizer.accept_waveform(data) {
         Ok(DecodingState::Finalized) => {
-            recognizer.result()
-                .multiple()
-                .and_then(|m| m.alternatives.first().map(|a| a.text.to_string()))
+            let result = recognizer.result();
+            let alternatives = result.multiple()?;
+            let best = alternatives.alternatives.first()?;
+            if best.text.is_empty() {
+                return None;
+            }
+            // the runners-up are the useful part when a recognition looks
+            // wrong: a confident hearing leaves them far behind, a guess does
+            // not, and no amount of staring at the winner alone shows that
+            if alternatives.alternatives.len() > 1 {
+                let others: Vec<String> = alternatives.alternatives.iter().skip(1)
+                    .map(|a| format!("{:?} {:.1}", a.text, a.confidence))
+                    .collect();
+                debug!("Alternatives after {:?} {:.1}: {}",
+                       best.text, best.confidence, others.join(", "));
+            }
+            Some((best.text.to_string(), best.confidence))
         }
         _ => None,
     }

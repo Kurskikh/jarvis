@@ -32,10 +32,19 @@ pub fn init() -> Result<(), String> {
     Ok(())
 }
 
+// A finished command transcript together with the recogniser's own score.
+//
+// Separate from recognize() because most callers only pump audio in and
+// discard the result; only the one place that decides to ACT on what was heard
+// needs to know how sure it was.
+pub fn recognize_command(data: &[i16]) -> Option<(String, f32)> {
+    vosk::recognize_speech(data)
+}
+
 pub fn recognize(data: &[i16], include_partial: bool) -> Option<String> {
     if include_partial {
         vosk::recognize_wake_word(data).map(|(text, _)| text)
     } else {
-        vosk::recognize_speech(data)
+        vosk::recognize_speech(data).map(|(text, _)| text)
     }
 }

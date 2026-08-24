@@ -111,6 +111,47 @@ pub fn play_sound(filename: &PathBuf) {
     }
 }
 
+// Speak one piece of a synthesised answer, gaplessly after whatever is
+// already queued. Unlike play_sound this takes bytes: the audio arrives from
+// the speech sidecar over a socket and is never a file.
+//
+// Returns false when the backend cannot do it, so the caller can stop asking
+// for the rest of the answer instead of synthesising into silence.
+pub fn play_speech(wav: Vec<u8>) -> bool {
+    let Some(audio_type) = AUDIO_TYPE.get() else {
+        warn!("Audio not initialized, cannot speak");
+        return false;
+    };
+
+    match audio_type {
+        AudioType::Kira => match kira::play_sequenced(wav) {
+            Some(remaining) => {
+                // the gate has to cover everything queued, not just this
+                // piece, or the microphone opens between sentences and the
+                // assistant hears itself finish its own answer
+                mark_speaking(remaining);
+                true
+            }
+            None => false,
+        },
+        AudioType::Rodio => {
+            // gapless scheduling needs the clock; rodio has no equivalent here
+            warn!("Speaking answers requires the Kira backend");
+            false
+        }
+    }
+}
+
+// Cut a spoken answer short. Safe to call when nothing is speaking.
+pub fn stop_speech() {
+    if let Some(AudioType::Kira) = AUDIO_TYPE.get() {
+        kira::stop_sequenced();
+    }
+    // reopen the microphone immediately: the reason to stop is to say
+    // something else
+    *SPEAKING_UNTIL.lock().unwrap() = None;
+}
+
 pub fn get_sound_directory() -> Option<PathBuf> {
     let db = DB.get()?;
 

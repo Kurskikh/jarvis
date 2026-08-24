@@ -229,6 +229,92 @@ pub const DEFAULT_LLM_SYSTEM_PROMPT: &str =
      Be brief: two or three sentences at most, no lists and no markdown - the answer is \
      read off a small screen.";
 
+// ### Speech (stage 2: the answer is spoken, not just written)
+//
+// A synthesised answer comes from a separate process. It has to: CosyVoice
+// needs torch and a couple of gigabytes of model, which cannot go in an
+// installer, so the sidecar is something the owner installs once and Jarvis
+// talks to over loopback.
+pub const DEFAULT_LLM_SPEAK: bool = true;
+pub const DEFAULT_LLM_TTS_URL: &str = "http://127.0.0.1:8771";
+// "stream" lets CosyVoice emit frames as it generates them; "sentence" waits
+// for the whole answer and returns it as one clip.
+//
+// Measured on a 5070 Ti: stream reaches first speech in 1.8-2.4s and varies by
+// half a second between runs, sentence takes 3.2-7.4s and varies by two and a
+// half. Streaming is both faster and, more importantly, predictable. The slow
+// mode is kept because it is the honest comparison, not because it is a
+// fallback - the fallback is automatic and lives in the sidecar.
+pub const DEFAULT_LLM_TTS_MODE: &str = "stream";
+pub const LLM_TTS_MODES: [&str; 2] = ["stream", "sentence"];
+// Empty means "connect to a sidecar that is already running, never start
+// one". Set it to the interpreter of the environment CosyVoice is installed
+// in and Jarvis will spawn and supervise the process itself.
+pub const DEFAULT_LLM_TTS_PYTHON: &str = "";
+// An instruction handed to the synthesiser describing HOW to speak - emotion,
+// pace, manner - rather than what to say. Empty means plain voice cloning.
+//
+// Measured on Fun-CosyVoice3-0.5B with a Russian reference, one line, three
+// languages of instruction:
+//   russian  - the model READ THE INSTRUCTION ALOUD, then garbled the line
+//   english  - did not read it out, but mangled the words
+//   chinese  - clean
+// The model is Chinese and its instruct training is Chinese, so an
+// instruction in anything else is treated as text to speak. Left empty by
+// default for that reason, and because instruct mode drops
+// llm_prompt_speech_token: the timbre survives, the MANNER copied from the
+// reference does not.
+pub const DEFAULT_LLM_TTS_INSTRUCT: &str = "";
+// how long to wait for a frame before deciding the sidecar has died. Generous:
+// the first frame of an answer costs about two seconds and a cold sidecar
+// spends ten more loading the model.
+pub const LLM_TTS_FIRST_FRAME_TIMEOUT: u64 = 45;
+// between frames the model is already generating, so a long gap means it
+// stopped rather than that it is thinking
+pub const LLM_TTS_FRAME_TIMEOUT: u64 = 30;
+
+// Appended to the system prompt whenever the answer is going to be spoken.
+//
+// Kept out of DEFAULT_LLM_SYSTEM_PROMPT deliberately: that one is the owner's
+// to edit, and this is a property of the output device, not of the assistant's
+// character. Someone who rewrites their prompt entirely should not silently
+// lose it.
+//
+// Punctuation is the point. CosyVoice reads rhythm and melody off commas and
+// full stops, and gemma answered a real question with "У меня всё хорошо
+// спасибо что спросили Я готов помочь" - not one mark in the whole line, which
+// synthesises as a flat unbroken stream. Everything else here is a small
+// bonus; the first sentence is the whole reason this exists.
+//
+// It used to permit two tags, <strong> and [breath], because CosyVoice 3
+// understands them. The speech engine is Qwen3-TTS now and it does not: asked
+// to say "[breath]" it says "Бред", and "<strong>" becomes "строк". The tags
+// were being stripped from the window and the log while going to the
+// synthesiser intact, so they were audible and invisible at the same time -
+// the worst combination for working out what is wrong.
+//
+// So: no brackets at all. speech::say strips them anyway, because a model
+// asked for plain prose will still produce one occasionally.
+pub const LLM_SPEECH_STYLE_DIRECTIVE: &str = concat!(
+    "This answer will be read aloud, so punctuate it properly: commas, full stops ",
+    "and question marks are what give speech its rhythm, and a line without them ",
+    "is read flat. Write plain prose only - no markdown, lists, emoji, parentheses, ",
+    "square brackets or angle brackets of any kind. Write numbers out the way you ",
+    "would say them.",
+);
+
+// ### Follow-up: keep listening after an answer
+//
+// Saying the wake word before every sentence of a conversation is the thing
+// that makes an assistant feel like a command line. After a turn finishes the
+// microphone stays open for a while, so the next question can just be asked.
+//
+// The window opens when the assistant STOPS TALKING, not when the command
+// returns: a language model turn answers seconds later and then reads the
+// answer out, and a timer started at the command would be long gone by then.
+pub const DEFAULT_FOLLOW_UP_SECS: u64 = 8;
+pub const FOLLOW_UP_SECS_MAX: u64 = 120;   // 0 disables it
+
 // ETC
 pub const CMD_RATIO_THRESHOLD: f64 = 75f64;
 pub const CMS_WAIT_DELAY: std::time::Duration = std::time::Duration::from_secs(15);

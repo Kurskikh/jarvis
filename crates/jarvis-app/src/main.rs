@@ -211,6 +211,10 @@ fn main() -> Result<(), String> {
                 info!("Received mute request: {}", muted);
                 // TODO: implement mute
             }
+            IpcAction::StopSpeaking => {
+                info!("Received stop-speaking request");
+                app::stop_speaking();
+            }
             IpcAction::TextCommand { text } => {
                 info!("Received text command: {}", text);
                 if let Err(e) = text_cmd_tx.send(text) {
@@ -220,7 +224,9 @@ fn main() -> Result<(), String> {
             IpcAction::Ping => {
                 // handled internally by server
             }
-            _ => {}
+            // deliberately no catch-all: every IpcAction is answered above, and
+            // adding a variant should stop the build here rather than have the
+            // new action silently ignored at runtime.
         }
     });
 

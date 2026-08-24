@@ -17,6 +17,7 @@ export {
     sendAction,
     sendIpcMessage,
     sendTextCommand,
+    stopSpeaking,
     stopJarvisApp,
     reloadCommands,
     reloadSettings,

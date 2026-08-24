@@ -71,20 +71,43 @@ pub fn reload_llm_settings() -> Result<bool, String> {
 
     let mut live = db.write();
 
+    // every llm_* key, not a hand-picked subset. Two were missed when they
+    // were added (max_tokens and thinking): they saved correctly, the window
+    // showed the new value, and the running assistant went on using the old
+    // one until the next restart - the worst kind of settings bug, because
+    // nothing looks wrong.
     let changed = live.llm_enabled != on_disk.llm_enabled
         || live.llm_base_url != on_disk.llm_base_url
         || live.llm_model != on_disk.llm_model
         || live.llm_timeout != on_disk.llm_timeout
+        || live.llm_max_tokens != on_disk.llm_max_tokens
+        || live.llm_thinking != on_disk.llm_thinking
         || live.llm_system_prompt != on_disk.llm_system_prompt
         || live.llm_allow_remote != on_disk.llm_allow_remote
+        || live.llm_speak != on_disk.llm_speak
+        || live.llm_tts_url != on_disk.llm_tts_url
+        || live.llm_tts_mode != on_disk.llm_tts_mode
+        || live.llm_tts_python != on_disk.llm_tts_python
+        || live.llm_tts_script != on_disk.llm_tts_script
+        || live.llm_tts_instruct != on_disk.llm_tts_instruct
+        || live.follow_up_secs != on_disk.follow_up_secs
         || live.api_keys.openai != on_disk.api_keys.openai;
 
     live.llm_enabled = on_disk.llm_enabled;
     live.llm_base_url = on_disk.llm_base_url;
     live.llm_model = on_disk.llm_model;
     live.llm_timeout = on_disk.llm_timeout;
+    live.llm_max_tokens = on_disk.llm_max_tokens;
+    live.llm_thinking = on_disk.llm_thinking;
     live.llm_system_prompt = on_disk.llm_system_prompt;
     live.llm_allow_remote = on_disk.llm_allow_remote;
+    live.llm_speak = on_disk.llm_speak;
+    live.llm_tts_url = on_disk.llm_tts_url;
+    live.llm_tts_mode = on_disk.llm_tts_mode;
+    live.llm_tts_python = on_disk.llm_tts_python;
+    live.llm_tts_script = on_disk.llm_tts_script;
+    live.llm_tts_instruct = on_disk.llm_tts_instruct;
+    live.follow_up_secs = on_disk.follow_up_secs;
     live.api_keys.openai = on_disk.api_keys.openai;
 
     Ok(changed)

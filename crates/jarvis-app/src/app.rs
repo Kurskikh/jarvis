@@ -1,7 +1,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::SystemTime;
 
-use jarvis_core::{audio, audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, llm, recorder, stt, intent, voices, ipc::{self, IpcEvent}, i18n, slots};
+use jarvis_core::{audio, audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, llm, recorder, speech, stt, intent, voices, ipc::{self, IpcEvent}, i18n, slots, DB};
 use rand::seq::SliceRandom;
 
 use crate::should_stop;
@@ -14,7 +14,34 @@ enum VadState {
 }
 
 pub fn start(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Result<(), ()> {
+    warm_speech(rt);
     main_loop(text_cmd_rx, rt)
+}
+
+// Get the speech sidecar up before anyone asks a question.
+//
+// Loading its model takes about ten seconds, and starting one takes longer
+// still. Doing that lazily would put the whole delay in front of the first
+// answer, after the "thinking" clip has already finished - the assistant would
+// stand silent for the one turn where the owner is most likely to be watching.
+//
+// Spawned and not awaited: a sidecar that never comes up must delay nothing.
+fn warm_speech(rt: &tokio::runtime::Runtime) {
+    if !speech::is_enabled() {
+        return;
+    }
+    let cfg = match speech::SpeechConfig::from_settings() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    rt.spawn(async move {
+        match speech::supervisor::ensure_running(&cfg).await {
+            Ok(h) => info!("Speech ready: {} @ {} Hz", h.model, h.sample_rate.unwrap_or(0)),
+            // not a warning: no sidecar is a normal way to run, the answers
+            // simply stay written
+            Err(e) => info!("Answers will not be spoken: {}", e),
+        }
+    });
 }
 
 fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Result<(), ()> {
@@ -101,15 +128,37 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
                     audio_processing::reset();
 
                     // brief sniff to keep feeding STT while transitioning
+                    //
+                    // The command recogniser still holds the wake word's own
+                    // audio, and it finalises that on its own schedule -
+                    // measured at 33 ms after activation on one utterance and
+                    // 604 ms on the next. Either side of this window, that
+                    // first finalised segment is the wake word rather than a
+                    // command, and read_segment has to be told which segment
+                    // that is.
+                    //
+                    // A result landing HERE is that segment, and it goes
+                    // nowhere: this loop has no way to act on it. So record
+                    // that it has been used up. Without this the rule would
+                    // aim one segment too late and throw away the real command
+                    // - which is precisely what a fast "джарвис" followed by a
+                    // question would hit.
                     let sniff_frames = ((0.3 * sample_rate as f32) / frame_length as f32) as u32;
+                    let mut wake_segment_pending = true;
                     for _ in 0..sniff_frames {
                         recorder::read_microphone(&mut frame_buffer);
                         audio_processing::process(&frame_buffer);
-                        stt::recognize(&frame_buffer, false);
+                        if stt::recognize(&frame_buffer, false).is_some() {
+                            wake_segment_pending = false;
+                        }
+                    }
+                    if !wake_segment_pending {
+                        debug!("The wake word's own audio finalised during the sniff window");
                     }
 
                     ipc::send(IpcEvent::Listening);
-                    recognize_command(&mut frame_buffer, &rt, frame_length, sample_rate, true);
+                    recognize_command(&mut frame_buffer, &rt, frame_length, sample_rate,
+                                      true, wake_segment_pending);
 
                     // reset state after command
                     vad_state = VadState::WaitingForVoice;
@@ -149,12 +198,76 @@ fn main_loop(text_cmd_rx: Receiver<String>, rt: &tokio::runtime::Runtime) -> Res
 
 
 // Voice recognition for command after wake word
+// What a finalized transcript means, given whether it is the first one after
+// the wake word fired.
+#[derive(Debug, PartialEq)]
+enum Segment {
+    // The wake word's own audio, coming back out of the full-vocabulary
+    // recogniser. Nothing was asked: acknowledge and keep listening.
+    WakeEcho,
+    // The wake word on its own, said again mid-turn. Start over.
+    Reactivate,
+    // Run this.
+    Command(String),
+}
+
+// The wake detector and the command recogniser are fed the same frames, so the
+// first transcript after an activation is a decode of the very audio the
+// detector just matched - the wake word itself, plus whatever was said in the
+// same breath. Telling those two apart is this function's whole job.
+//
+// The detector reaches its verdict with a grammar of eight words, so it always
+// spells the wake word the same way. The command recogniser has the entire
+// language to choose from and spells that same audio however it likes: real
+// examples off the logs are "баржа", "карлос", "райс" and "прорыв", with
+// "борджа" and "каррас" as runners-up. The old test - "does the transcript
+// contain a wake phrase?" - therefore failed exactly when the audio was hardest
+// to decode, and a mishearing of the wake word went off to the language model
+// as if it were a question. That is jarvis answering something nobody asked.
+//
+// So on the first segment the absence of the wake word is not evidence that a
+// command was spoken; it is evidence that this decode did not understand the
+// audio. A decode that lost the wake word cannot be trusted to have kept a
+// command either, so it is dropped whole and the next segment is awaited. That
+// costs a repeat when a run-on phrase is misheard - where today a corrupted
+// prompt is sent instead - and it makes a phantom question impossible.
+//
+// Later segments are ordinary commands and carry no wake word, which is why the
+// rule applies only to the one segment the detector matched.
+fn read_segment(text: &str, wake_phrases: &[&str], first_after_wake: bool) -> Segment {
+    let text = text.trim().to_lowercase();
+    let contains_wake = wake_phrases.iter().any(|wp| text.contains(wp));
+
+    if contains_wake {
+        let mut rest = text.clone();
+        for wp in wake_phrases {
+            rest = rest.replace(wp, "");
+        }
+        let rest = rest.trim().to_string();
+        return if rest.is_empty() {
+            if first_after_wake { Segment::WakeEcho } else { Segment::Reactivate }
+        } else {
+            Segment::Command(rest)
+        };
+    }
+
+    if first_after_wake {
+        return Segment::WakeEcho;
+    }
+    Segment::Command(text)
+}
+
 fn recognize_command(
     frame_buffer: &mut [i16],
     rt: &tokio::runtime::Runtime,
     frame_length: usize,
     sample_rate: usize,
-    prefed_audio: bool
+    prefed_audio: bool,
+    // Is the wake word's own audio still waiting to come out of the recogniser?
+    // Separate from prefed_audio: that one says where this listening window
+    // starts, this one says whether the first segment out of it belongs to the
+    // wake word or to the person.
+    wake_segment_pending: bool,
 ) {
     let mut audio_buffer = AudioRingBuffer::new(2.0, frame_length, sample_rate);
     let mut vad_state = if prefed_audio {
@@ -164,7 +277,15 @@ fn recognize_command(
     };
     let mut silence_frames: u32 = 0;
     let mut start = SystemTime::now();
-    let mut first_recognition = prefed_audio;
+    let mut first_recognition = wake_segment_pending;
+
+    // how long this listening window lasts. It shortens to the follow-up
+    // setting once a turn has been answered: waiting the full command timeout
+    // again would leave the microphone open far longer than anyone expects
+    // after an answer nobody followed up on.
+    let mut deadline = config::CMS_WAIT_DELAY;
+    let follow_up = std::time::Duration::from_secs(
+        DB.get().map(|db| db.read().follow_up_secs).unwrap_or(0));
     
     // longer silence threshold for commands (user might pause to think)
     // 5 seconds
@@ -179,7 +300,15 @@ fn recognize_command(
 
         // our own reaction is playing into this microphone; discard rather than
         // transcribe it, or the confirmation becomes the next "command"
-        if audio::is_speaking() {
+        //
+        // the clock is held back for as long as this lasts. An answer takes
+        // seconds to arrive and another ten to read out, and a window that
+        // counted down through all of it would be over before the assistant
+        // stopped talking - the follow-up seconds are meant to start when
+        // there is finally silence to speak into.
+        if llm_busy() {
+            start = SystemTime::now();
+            silence_frames = 0;
             continue;
         }
         let processed = audio_processing::process(frame_buffer);
@@ -207,8 +336,18 @@ fn recognize_command(
             
             VadState::VoiceActive => {
                 // feed to STT
-                if let Some(mut recognized_voice) = stt::recognize(frame_buffer, false) {
-                    info!("Recognized voice: {}", recognized_voice);
+                if let Some((mut recognized_voice, confidence)) =
+                    stt::recognize_command(frame_buffer)
+                {
+                    // the score is reported, not enforced. Vosk's confidence is
+                    // a summed log-likelihood: it grows with the length of the
+                    // utterance, so "above 120" means one thing for a word and
+                    // another for a sentence, and a threshold picked without
+                    // real samples of both would reject good commands to catch
+                    // bad ones. Logged so that threshold can be chosen from
+                    // measurements instead of taste.
+                    info!("Recognized voice: {} (confidence {:.1})",
+                          recognized_voice, confidence);
                     
                     ipc::send(IpcEvent::SpeechRecognized {
                         text: recognized_voice.clone(),
@@ -217,48 +356,40 @@ fn recognize_command(
                     
                     recognized_voice = recognized_voice.to_lowercase();
                     
-                    // check if wake word repeated (reactivate)
-                    let wake_phrases = config::get_wake_phrases(&i18n::get_language());
-                    let contains_wake = wake_phrases.iter().any(|wp| recognized_voice.contains(wp));
-
-                    if contains_wake {
-                        // strip the wake word
-                        let mut remaining = recognized_voice.clone();
-                        for wp in wake_phrases {
-                            remaining = remaining.replace(wp, "");
-                        }
-                        let remaining = remaining.trim();
-
-                        if remaining.is_empty() {
-                            if first_recognition {
-                                // leftover wake word from dual-feed, just discard it
-                                info!("Discarding initial wake word from prefed audio");
-                                first_recognition = false;
-                                stt::reset_speech_recognizer();
-                                voices::play_reply();
-                                vad_state = VadState::WaitingForVoice;
-                                silence_frames = 0;
-                                start = SystemTime::now();
-                                audio_buffer.clear();
-                                continue;
-                            }
-
-                            // just wake word, no command - reactivate
-                            info!("Wake word repeated during chaining, reactivating...");
-                            voices::play_reply();
+                    match read_segment(
+                        &recognized_voice,
+                        config::get_wake_phrases(&i18n::get_language()),
+                        first_recognition,
+                    ) {
+                        Segment::WakeEcho => {
+                            info!("Discarding the wake word's own audio, heard as '{}'",
+                                  recognized_voice);
+                            first_recognition = false;
                             stt::reset_speech_recognizer();
-                            ipc::send(IpcEvent::Listening);
-                            
+                            voices::play_reply();
                             vad_state = VadState::WaitingForVoice;
                             silence_frames = 0;
                             start = SystemTime::now();
                             audio_buffer.clear();
                             continue;
-                        } else {
-                            // wake word + command in one phrase - execute the command part
-                            info!("Wake word + command during chaining: '{}'", remaining);
-                            recognized_voice = remaining.to_string();
-                            // fall through to command execution below
+                        }
+                        Segment::Reactivate => {
+                            info!("Wake word repeated during chaining, reactivating...");
+                            voices::play_reply();
+                            stt::reset_speech_recognizer();
+                            ipc::send(IpcEvent::Listening);
+
+                            vad_state = VadState::WaitingForVoice;
+                            silence_frames = 0;
+                            start = SystemTime::now();
+                            audio_buffer.clear();
+                            continue;
+                        }
+                        Segment::Command(text) => {
+                            if text != recognized_voice {
+                                info!("Wake word + command in one phrase: '{}'", text);
+                            }
+                            recognized_voice = text;
                         }
                     }
 
@@ -273,13 +404,20 @@ fn recognize_command(
                     }
 
                     recognized_voice = recognized_voice.trim().to_string();
-                    
-                    if recognized_voice.len() < 5 {
-                        debug!("Ignoring too short recognition: '{}'", recognized_voice);
-                        continue;
-                    }
 
-                    if recognized_voice.is_empty() {
+                    // CHARACTERS, not bytes. String::len() counts bytes, so the
+                    // old "< 5" was about two Cyrillic letters - a filter that
+                    // barely existed for the one language this ships with.
+                    //
+                    // The bound stays low on purpose. It cannot be raised to
+                    // catch a four-letter mishearing, because the shortest
+                    // command actually shipped is "всё" at three characters:
+                    // any threshold that rejects the noise rejects the command
+                    // too. Length is a floor against fragments, not a quality
+                    // check - see MIN_COMMAND_CHARS and the test that pins it
+                    // to the shipped packs.
+                    if recognized_voice.chars().count() < MIN_COMMAND_CHARS {
+                        debug!("Ignoring too short recognition: '{}'", recognized_voice);
                         continue;
                     }
                     
@@ -293,6 +431,21 @@ fn recognize_command(
                         vad_state = VadState::WaitingForVoice;
                         silence_frames = 0;
                         start = SystemTime::now();
+                        audio_buffer.clear();
+                        ipc::send(IpcEvent::Listening);
+                        continue;
+                    } else if !follow_up.is_zero() {
+                        // Keep listening for a while so a conversation does not
+                        // need the wake word before every sentence. The window
+                        // does not start counting until the assistant has
+                        // finished answering - see the llm_busy check above.
+                        info!("Listening for a follow-up ({}s after the answer)...",
+                              follow_up.as_secs());
+                        stt::reset_speech_recognizer();
+                        vad_state = VadState::WaitingForVoice;
+                        silence_frames = 0;
+                        start = SystemTime::now();
+                        deadline = follow_up;
                         audio_buffer.clear();
                         ipc::send(IpcEvent::Listening);
                         continue;
@@ -319,8 +472,9 @@ fn recognize_command(
         
         // timeout
         if let Ok(elapsed) = start.elapsed() {
-            if elapsed > config::CMS_WAIT_DELAY {
-                info!("Command timeout, returning to wake word mode.");
+            if elapsed > deadline {
+                info!("Nothing said for {}s, returning to wake word mode.",
+                      deadline.as_secs());
                 return;
             }
         }
@@ -491,7 +645,40 @@ fn execute_command(text: &str, rt: &tokio::runtime::Runtime) -> bool {
 // returns immediately, so two quick "no command found"s put two answers in
 // flight; without this the slower one lands last and overwrites the newer
 // question's answer in the GUI.
+// Shorter than this and it cannot be anything anyone meant to say.
+//
+// Three, because the shortest phrase in the shipped command packs is "всё".
+// Deliberately NOT tuned upward to reject mishearings: "райс" - a real false
+// positive from this microphone - is four characters, longer than a command
+// that has to keep working. Sorting those two apart needs recognition
+// confidence, not length. The test at the bottom of this file keeps the
+// constant honest against the packs.
+const MIN_COMMAND_CHARS: usize = 3;
+
 static LLM_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// How many language model turns are still running - asking, or reading the
+// answer out. A counter and not a flag: superseding spawns the new turn before
+// aborting the old one, so a flag would be cleared by the corpse of the turn
+// that was just replaced.
+static LLM_PENDING: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+// Decrements on drop, so an aborted turn releases the count too. Created
+// synchronously and moved into the task, which covers the case where the
+// future is dropped before it is ever polled.
+struct PendingTurn;
+
+impl Drop for PendingTurn {
+    fn drop(&mut self) {
+        LLM_PENDING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+// true while an answer is still coming: being generated, or being spoken
+fn llm_busy() -> bool {
+    LLM_PENDING.load(std::sync::atomic::Ordering::SeqCst) > 0
+        || audio::is_speaking()
+}
 
 // handle of the in-flight turn, so a new question also CANCELS the old request
 // instead of leaving the model generating tokens nobody will read.
@@ -516,6 +703,23 @@ fn supersede_llm_turn() {
     if let Some(old) = LLM_TASK.lock().take() {
         old.abort();
     }
+    // and stop the previous answer mid-word if it is still being spoken.
+    // Aborting the task alone would not: the audio is already queued in the
+    // mixer and would keep playing over the new question.
+    speech::stop();
+}
+
+// Cut short whatever the assistant is saying, from the tray or the window.
+//
+// Bumping the generation is what actually stops it: the speaking loop checks
+// it between chunks and stops asking the sidecar for more, so the answer ends
+// rather than merely going quiet while synthesis carries on.
+pub fn stop_speaking() {
+    use std::sync::atomic::Ordering;
+
+    LLM_GEN.fetch_add(1, Ordering::SeqCst);
+    speech::stop();
+    debug!("Speech stopped by request");
 }
 
 // ask the LLM about an utterance no command matched, WITHOUT blocking here.
@@ -541,7 +745,14 @@ fn spawn_llm_turn(rt: &tokio::runtime::Runtime, cfg: llm::LlmConfig, prompt: Str
     // assistant would otherwise answer silence with silence.
     voices::play_thinking();
 
+    // counted from here, not from inside the task: between spawn and the first
+    // poll the future can be dropped, and a guard created in there would never
+    // exist to be dropped
+    LLM_PENDING.fetch_add(1, Ordering::SeqCst);
+    let pending = PendingTurn;
+
     let handle = rt.spawn(async move {
+        let _pending = pending;
         ipc::send(IpcEvent::LlmThinking {
             request_id: request_id.clone(),
             prompt: prompt.clone(),
@@ -560,20 +771,28 @@ fn spawn_llm_turn(rt: &tokio::runtime::Runtime, cfg: llm::LlmConfig, prompt: Str
 
         match result {
             Ok(a) => {
+                // the synthesiser's tags are for the synthesiser. The window
+                // and the log get prose; the sidecar gets a.text as written.
+                let shown = speech::strip_markup(&a.text);
+
                 // the text goes in the log too, {:?} so a multi-line answer
                 // stays one line. with no GUI attached (see the has_clients
                 // check at the hook) the log is the only place it lands.
                 info!("LLM answered in {} ms ({} completion tokens, model {}): {:?}",
-                      elapsed_ms, a.completion_tokens, a.model, a.text);
+                      elapsed_ms, a.completion_tokens, a.model, shown);
                 ipc::send(IpcEvent::LlmAnswer {
                     request_id,
                     prompt,
-                    answer: Some(a.text),
+                    answer: Some(shown),
                     model: a.model,
                     elapsed_ms,
                     error_code: None,
                     error: None,
                 });
+
+                // the answer has already reached the window and the log; the
+                // voice is on top of that, never instead of it
+                speak_answer(&a.text, generation).await;
             }
             Err(e) => {
                 warn!("LLM turn failed after {} ms: {}", elapsed_ms, e);
@@ -598,9 +817,191 @@ fn spawn_llm_turn(rt: &tokio::runtime::Runtime, cfg: llm::LlmConfig, prompt: Str
 }
 
 
+// Say an answer out loud, if there is anything to say it with.
+//
+// Every failure here is logged and swallowed. Speech is the last step of a
+// turn that has already succeeded: the answer is on screen and in the log
+// before this runs, so nothing about a missing or broken sidecar should look
+// like the question failed.
+async fn speak_answer(text: &str, generation: u64) {
+    use std::sync::atomic::Ordering;
+
+    if text.trim().is_empty() {
+        return;
+    }
+
+    let cfg = match speech::SpeechConfig::from_settings() {
+        Ok(c) => c,
+        Err(speech::SpeechError::Disabled) => return,
+        Err(e) => {
+            debug!("Not speaking: {}", e);
+            return;
+        }
+    };
+
+    // cheap when it is already up, and it means a sidecar started after
+    // Jarvis is picked up without restarting anything
+    if let Err(e) = speech::supervisor::ensure_running(&cfg).await {
+        warn!("Not speaking the answer: {}", e);
+        return;
+    }
+
+    let superseded = || LLM_GEN.load(Ordering::SeqCst) != generation;
+    match speech::say(&cfg, text, superseded).await {
+        Ok(s) if s.cancelled =>
+            debug!("Speech stopped after {} chunk(s)", s.frames),
+        Ok(s) => info!(
+            "Spoke the answer in {} chunk(s): first at {} ms, {} ms in total{}",
+            s.frames, s.first_frame_ms, s.total_ms,
+            if s.fell_back { " (sidecar fell back to one shot)" } else { "" }),
+        Err(e) => warn!("Speaking the answer failed: {}", e),
+    }
+}
+
 pub fn close(code: i32) {
     info!("Closing application.");
     voices::play_goodbye();
     ipc::send(IpcEvent::Stopping);
+    // before the exit, not after: std::process::exit runs no destructors, and
+    // a sidecar left behind holds both the port and the GPU while the next run
+    // wonders what has them
+    speech::supervisor::shutdown();
     std::process::exit(code);
+}
+#[cfg(test)]
+mod length_floor_tests {
+    use super::MIN_COMMAND_CHARS;
+
+    // Every Russian phrase in the shipped command packs, straight off disk.
+    fn shipped_phrases() -> Vec<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../resources/commands");
+        let mut out = Vec::new();
+        let entries = std::fs::read_dir(&root)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", root.display(), e));
+        for entry in entries.flatten() {
+            let toml = entry.path().join("command.toml");
+            let Ok(text) = std::fs::read_to_string(&toml) else { continue };
+            // a deliberately dumb scan: this test exists to compare the
+            // constant against reality, and pulling in a toml parser to do it
+            // would let a parser quirk hide the very thing being checked
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find("phrases.ru") {
+                rest = &rest[at..];
+                let Some(open) = rest.find('[') else { break };
+                let Some(close) = rest[open..].find(']') else { break };
+                let block = &rest[open..open + close];
+                for piece in block.split('"').skip(1).step_by(2) {
+                    out.push(piece.to_string());
+                }
+                rest = &rest[open + close..];
+            }
+        }
+        assert!(out.len() > 50, "only found {} phrases - the scan is broken", out.len());
+        out
+    }
+
+    // The floor must not reject anything the assistant is supposed to obey.
+    // This is the constraint that stops the constant being raised to swat a
+    // mishearing: the shortest shipped command is shorter than the noise.
+    #[test]
+    fn the_floor_lets_every_shipped_command_through() {
+        let phrases = shipped_phrases();
+        let shortest = phrases.iter()
+            .min_by_key(|p| p.chars().count())
+            .expect("no phrases");
+
+        for p in &phrases {
+            assert!(p.chars().count() >= MIN_COMMAND_CHARS,
+                    "the length floor of {} would reject the shipped command {:?} \
+                     ({} chars)", MIN_COMMAND_CHARS, p, p.chars().count());
+        }
+
+        // and the floor is not idly low: it sits right at the shortest command,
+        // so raising it by one breaks something real
+        assert_eq!(shortest.chars().count(), MIN_COMMAND_CHARS,
+                   "the shortest shipped command is {:?}; MIN_COMMAND_CHARS should \
+                    equal its length, not sit above or below it", shortest);
+    }
+
+    // The bug this replaced: String::len() counts bytes, so the old floor of 5
+    // was about two Cyrillic letters and let four-letter noise straight through.
+    #[test]
+    fn the_floor_counts_characters_not_bytes() {
+        assert_eq!("всё".chars().count(), 3);
+        assert_eq!("всё".len(), 6, "Cyrillic is two bytes a letter - that was the bug");
+        assert_eq!("райс".chars().count(), 4);
+        assert!("райс".len() >= 5, "the old byte floor of 5 could never reject it");
+    }
+}
+
+#[cfg(test)]
+mod wake_echo_tests {
+    use super::{read_segment, Segment};
+
+    const RU: &[&str] = &["джарвис", "джервис", "гарвис", "джарви", "гарви"];
+
+    #[test]
+    fn the_wake_word_alone_right_after_activation_is_its_own_echo() {
+        assert_eq!(read_segment("джарвис", RU, true), Segment::WakeEcho);
+    }
+
+    #[test]
+    fn a_mishearing_of_the_wake_word_is_dropped_rather_than_asked() {
+        // every one of these is off a real log: the eight-word wake grammar
+        // reported "джарвис" while the full vocabulary rendered the same audio
+        // like this. Before this rule each went to the language model as a
+        // question, and jarvis answered it out loud.
+        for misheard in ["баржа", "карлос", "райс", "прорыв", "борджа", "каррас"] {
+            assert_eq!(
+                read_segment(misheard, RU, true),
+                Segment::WakeEcho,
+                "'{}' right after the wake word must not become a question",
+                misheard
+            );
+        }
+    }
+
+    #[test]
+    fn the_very_same_words_later_in_the_turn_are_ordinary_commands() {
+        // the rule is about the ONE segment the detector matched. Afterwards
+        // there is no wake word to expect, and a command must pass through - a
+        // guard that swallowed these would make chaining useless.
+        assert_eq!(
+            read_segment("баржа", RU, false),
+            Segment::Command("баржа".to_string())
+        );
+    }
+
+    #[test]
+    fn a_run_on_phrase_keeps_the_part_after_the_wake_word() {
+        assert_eq!(
+            read_segment("джарвис как дела", RU, true),
+            Segment::Command("как дела".to_string())
+        );
+    }
+
+    #[test]
+    fn the_wake_word_alone_later_in_the_turn_starts_a_new_one() {
+        assert_eq!(read_segment("джарвис", RU, false), Segment::Reactivate);
+    }
+
+    #[test]
+    fn any_of_the_accepted_spellings_counts_as_the_wake_word() {
+        // the detector matches fuzzily, so the command recogniser's near-misses
+        // are listed as wake phrases too; all of them must strip the same way
+        for spelling in RU {
+            assert_eq!(
+                read_segment(&format!("{} открой музыку", spelling), RU, true),
+                Segment::Command("открой музыку".to_string()),
+                "spelling '{}'",
+                spelling
+            );
+        }
+    }
+
+    #[test]
+    fn case_and_surrounding_space_do_not_matter() {
+        assert_eq!(read_segment("  ДЖАРВИС  ", RU, true), Segment::WakeEcho);
+    }
 }

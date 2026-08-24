@@ -144,6 +144,9 @@ fn handle_menu_event(event: &MenuEvent, settings: &SettingsManager, tray_state: 
             release_audio();
             std::process::exit(0)
         }
+        "stop_speaking" => {
+            crate::app::stop_speaking();
+        }
         "restart" => {
             info!("Restarting from tray menu...");
             restart_app();
@@ -171,6 +174,12 @@ fn load_icon_from_bytes(bytes: &[u8]) -> tray_icon::Icon {
 // path (app.rs, where stop_recording lives) ever runs when the tray exits.
 // Every exit route has to release the microphone itself.
 fn release_audio() {
+    // a sidecar we started is ours to stop. The tray exits with
+    // std::process::exit, which skips app::close entirely, so this is the only
+    // place on this path where it can happen - leave it out and the next run
+    // finds the port taken by a copy still holding the GPU.
+    jarvis_core::speech::supervisor::shutdown();
+
     if let Err(()) = jarvis_core::recorder::stop_recording() {
         error!("Failed to stop the recorder before exiting.");
     }

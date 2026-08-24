@@ -3,6 +3,7 @@ app-name = JARVIS
 app-description = Voice Assistant
 
 # ### TRAY MENU
+tray-stop-speaking = Stop speaking
 tray-restart = Restart
 tray-settings = Settings
 tray-exit = Exit
@@ -94,7 +95,7 @@ settings-models-not-found = Models not found
 settings-models-hint = Place Vosk models in resources/vosk folder
 
 # settings - openai
-settings-openai-key = OpenAI Key
+settings-api-key = Access key
 
 # ### COMMANDS PAGE
 commands-search = Search commands...
@@ -216,7 +217,10 @@ settings-llm-base-url-desc =
     OpenAI-compatible address. LM Studio: http://127.0.0.1:1234/v1
     Ollama: http://127.0.0.1:11434/v1
 settings-llm-model = Model
-settings-llm-model-desc = Exact model name as the server reports it.
+settings-llm-model-desc = Picked from what the server reports it can serve. If the server does not answer, the name can still be typed in.
+settings-llm-models-refresh = Refresh the list
+settings-llm-models-loading = Asking the server…
+settings-llm-models-empty = The server answers but named no models - it looks like none are loaded.
 settings-llm-timeout = Timeout (seconds)
 settings-llm-timeout-desc = A model loading for the first time can take a minute. From 10 to 600.
 settings-llm-max-tokens = Answer token limit
@@ -229,13 +233,38 @@ settings-llm-system-prompt = System prompt
 settings-llm-system-prompt-desc = Sent before every question. Leave empty to send none.
 settings-llm-allow-remote = Allow a remote endpoint
 settings-llm-allow-remote-desc = Off, only loopback addresses are accepted. Turning this on sends your speech to another machine.
+settings-llm-speak = Speak the answers
+settings-llm-speak-desc = Read answers out loud in the assistant's voice. Needs the speech sidecar running; without it answers stay written.
+settings-llm-tts-url = Speech sidecar
+settings-llm-tts-url-desc = Where the sidecar listens. Loopback only - the sidecar is a local process and there is no reason to send speech elsewhere.
+settings-llm-tts-url-bad = Loopback addresses only. Speech is synthesised on this machine and does not leave it.
+settings-llm-tts-check = Check the connection
+settings-llm-tts-checking = Checking…
+settings-llm-tts-ok = The sidecar answers
+settings-llm-tts-hz = Hz
+settings-llm-tts-mode = Synthesis mode
+settings-llm-tts-mode-desc = Streaming starts speaking about a second and a half sooner and varies far less between answers. One shot waits for the whole answer; kept for comparison.
+settings-llm-tts-mode-stream = Streaming
+settings-llm-tts-mode-sentence = One shot
+settings-llm-tts-python = Sidecar interpreter
+settings-llm-tts-python-desc = Python from the environment the synthesis engine is installed in. Fill this in only if you want jarvis to start the sidecar itself.
+settings-llm-tts-script = Sidecar script
+settings-llm-tts-script-desc = Full path to the sidecar script. Needed only if the interpreter above is filled in.
+settings-llm-tts-advanced = Advanced: let jarvis start the sidecar itself
+settings-llm-tts-advanced-desc = Leave both empty if you start the sidecar yourself - jarvis will simply connect to the address above. Fill both in and it will start the sidecar on launch and stop it on exit.
+settings-llm-tts-half = Only one of the two is filled in. Starting the sidecar needs both; otherwise clear both and start it yourself.
+settings-llm-tts-instruct = Voice instruction
+settings-llm-tts-instruct-desc = How to speak, not what to say. Empty means plain cloning from your sample, and that is the recommended setting: an instruction drops the manner copied from the sample and keeps only the timbre. Measured: a Chinese instruction works, an English one mangles words, a Russian one gets read aloud instead of the answer.
+settings-follow-up = Keep listening after an answer
+settings-follow-up-desc = Seconds to stay listening once the assistant has finished speaking, so the next question needs no wake word. The countdown starts when it stops talking, not when you asked. 0 turns it off.
 settings-llm-remote-blocked = Not a loopback address. Nothing is sent there while "Allow a remote endpoint" is off.
-settings-openai-key-desc = Bearer token for the endpoint above. LM Studio: Developer tab. Ollama needs none.
+settings-api-key-desc = Bearer token for the address above. LM Studio: Developer tab. Ollama needs none.
 settings-saved-restart-hint = The assistant could not be reached, so it may still be using its previous settings. Restart it to apply them.
 
 # llm answer panel
 llm-thinking = Thinking...
 llm-answer = Answer
+llm-stop-speaking = Stop speaking
 llm-error-connect = Cannot reach the model
 llm-error-unauthorized = The endpoint rejected the token
 llm-error-model-not-found = Model not available

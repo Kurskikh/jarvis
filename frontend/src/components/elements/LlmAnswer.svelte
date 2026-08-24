@@ -1,6 +1,17 @@
 <script lang="ts">
-    import { Paper, Text, Loader, Group } from "@svelteuidev/core"
-    import { llmTurn, translations, translate } from "@/stores"
+    import { Paper, Text, Loader, Group, Button } from "@svelteuidev/core"
+    import { llmTurn, translations, translate, stopSpeaking } from "@/stores"
+
+    // shown next to a finished answer, because that is exactly when the
+    // assistant starts reading it out. It stays until the next question, which
+    // means it can outlive the speech - pressing it then is harmless, and that
+    // is the better failure than having no way to stop a two-minute answer.
+    let silenced = false
+    $: if ($llmTurn?.thinking) silenced = false
+
+    function silence() {
+        silenced = stopSpeaking() || silenced
+    }
 
     $: t = (key: string) => translate($translations, key)
 
@@ -33,6 +44,13 @@
                         </span>
                     {/if}
                 </Text>
+                {#if !$llmTurn.errorCode && $llmTurn.answer && !silenced}
+                    <div class="llm-silence">
+                        <Button size="xs" variant="subtle" color="gray" on:click={silence}>
+                            {t('llm-stop-speaking')}
+                        </Button>
+                    </div>
+                {/if}
                 <!-- the question, always. an answer arrives seconds after the
                      utterance and the panel outlives the recognized-text line,
                      so an answer with no question on it is unreadable as soon
@@ -74,6 +92,10 @@
         /* the model answers in prose with newlines; Text does not preserve them */
         white-space: pre-wrap;
         word-break: break-word;
+    }
+
+    .llm-silence {
+        margin-top: 0.25rem;
     }
 
     .llm-meta {

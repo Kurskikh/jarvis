@@ -346,6 +346,15 @@ export function sendTextCommand(text: string): boolean {
     return sendAction("text_command", { text })
 }
 
+// cut short an answer the assistant is reading out loud.
+//
+// this cannot be done by voice: the microphone is deliberately deaf while a
+// reaction plays, or the assistant would hear itself and answer its own
+// confirmations. So the only ways out are this button and the tray item.
+export function stopSpeaking(): boolean {
+    return sendAction("stop_speaking")
+}
+
 // tell the running assistant to re-read the LLM settings from app.db.
 //
 // jarvis-app loads app.db once at startup and this window is a different

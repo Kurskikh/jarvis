@@ -74,3 +74,46 @@ pub fn data_callback(frame_buffer: &[i16]) -> Option<i32> {
 
 //     None
 // }
+
+
+
+#[cfg(test)]
+mod tests {
+    // A false positive from a real microphone: the user said "Джарвис" and
+    // "райс" was executed as a command. The obvious fix is to strip anything
+    // that looks like the wake word using the same fuzzy match the detector
+    // uses - and it does not work, which is worth keeping written down.
+    //
+    // "райс" scores 40% against the closest wake phrase, well under the 70%
+    // the detector demands. It is not a mangled wake word; it is a different
+    // word. Sorting it out needs recognition confidence, not string distance.
+    #[test]
+    fn a_misheard_fragment_is_not_a_mangled_wake_word() {
+        let phrases = crate::config::get_wake_phrases("ru");
+        let best = |s: &str| -> f64 {
+            let sc: Vec<char> = s.chars().collect();
+            phrases.iter().map(|p| {
+                let pc: Vec<char> = p.chars().collect();
+                seqdiff::ratio(&pc, &sc)
+            }).fold(0.0, f64::max)
+        };
+
+        // the real false positive: far below the gate, so fuzzy stripping
+        // would never have caught it
+        assert!(best("райс") < crate::config::VOSK_MIN_RATIO,
+                "райс scored {:.1}%, so a fuzzy wake-word filter cannot be the fix",
+                best("райс"));
+
+        // genuine manglings of the wake word ARE above it, which is why the
+        // detector works at all
+        for m in ["рвис", "арвис", "гарис", "джервис"] {
+            assert!(best(m) >= crate::config::VOSK_MIN_RATIO,
+                    "{} scored {:.1}%, expected the detector to accept it", m, best(m));
+        }
+
+        // and ordinary speech is nowhere near
+        for s in ["как дела", "включи музыку"] {
+            assert!(best(s) < 40.0, "{} scored {:.1}%", s, best(s));
+        }
+    }
+}
