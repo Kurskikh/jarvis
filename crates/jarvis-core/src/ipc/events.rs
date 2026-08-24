@@ -114,7 +114,9 @@ pub enum IpcAction {
     // jarvis-app loads app.db once at startup and the settings window lives in
     // a different process, so without this nothing saved there ever reaches the
     // running assistant. fired by the GUI after a successful db_write_many;
-    // handled by db::reload_llm_settings(), which adopts ONLY the llm_* keys
+    // handled by db::reload_live_settings(), which adopts the settings a
+    // running assistant can take up without restarting - the two engines,
+    // the wake threshold, the VAD levels, ducking, and the llm_* keys
     // and the openai token - the rest were consumed at init and still need a
     // restart. fire-and-forget: there is no answering event, the next LLM turn
     // simply uses the new values.

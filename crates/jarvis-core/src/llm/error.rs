@@ -70,7 +70,7 @@ fn said(msg: &Option<String>) -> String {
 // NOTHING here promises that a settings change applies by itself. it applies
 // once the save reaches THIS process: jarvis-app reads app.db at startup and
 // the settings window is a different process, so the GUI fires
-// IpcAction::ReloadSettings after db_write_many and db::reload_llm_settings()
+// IpcAction::ReloadSettings after db_write_many and db::reload_live_settings()
 // adopts the new llm_* values. when that action cannot be delivered the GUI
 // says a restart is needed (settings-saved-restart-hint) - which is exactly why
 // these messages must not say the opposite.

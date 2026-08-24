@@ -60,7 +60,7 @@ pub fn init() -> SettingsManager {
 /// model, wake-word engine - leaving the live struct describing a configuration
 /// the process is not actually running. those still need a restart, and saying
 /// so is honest; the LLM fields are read fresh on every turn, so they do not.
-pub fn reload_llm_settings() -> Result<bool, String> {
+pub fn reload_live_settings() -> Result<bool, String> {
     let db = crate::DB.get().ok_or("settings are not initialized in this process")?;
 
     let db_file_path = get_db_file_path();
@@ -85,6 +85,8 @@ pub fn reload_llm_settings() -> Result<bool, String> {
         || live.llm_system_prompt != on_disk.llm_system_prompt
         || live.llm_allow_remote != on_disk.llm_allow_remote
         || live.llm_speak != on_disk.llm_speak
+        || live.wake_word_engine != on_disk.wake_word_engine
+        || live.speech_to_text_engine != on_disk.speech_to_text_engine
         || live.wake_min_score != on_disk.wake_min_score
         || live.vad_energy_threshold != on_disk.vad_energy_threshold
         || live.speech_pause_ms != on_disk.speech_pause_ms
@@ -99,6 +101,7 @@ pub fn reload_llm_settings() -> Result<bool, String> {
         || live.llm_tts_script != on_disk.llm_tts_script
         || live.llm_tts_instruct != on_disk.llm_tts_instruct
         || live.follow_up_secs != on_disk.follow_up_secs
+        || live.dialogue_exit_secs != on_disk.dialogue_exit_secs
         || live.api_keys.openai != on_disk.api_keys.openai;
 
     live.llm_enabled = on_disk.llm_enabled;
@@ -110,6 +113,13 @@ pub fn reload_llm_settings() -> Result<bool, String> {
     live.llm_system_prompt = on_disk.llm_system_prompt;
     live.llm_allow_remote = on_disk.llm_allow_remote;
     live.llm_speak = on_disk.llm_speak;
+    // The two engines are read live now - by the wake detector on every frame
+    // and by the command path as each turn begins - so this is the whole of
+    // what makes a switch take effect. Without these two lines the window would
+    // save a choice the microphone never hears about, which is the restart
+    // requirement all over again, only quieter.
+    live.wake_word_engine = on_disk.wake_word_engine;
+    live.speech_to_text_engine = on_disk.speech_to_text_engine;
     live.wake_min_score = on_disk.wake_min_score;
     live.vad_energy_threshold = on_disk.vad_energy_threshold;
     live.speech_pause_ms = on_disk.speech_pause_ms;
@@ -124,7 +134,18 @@ pub fn reload_llm_settings() -> Result<bool, String> {
     live.llm_tts_script = on_disk.llm_tts_script;
     live.llm_tts_instruct = on_disk.llm_tts_instruct;
     live.follow_up_secs = on_disk.follow_up_secs;
+    live.dialogue_exit_secs = on_disk.dialogue_exit_secs;
     live.api_keys.openai = on_disk.api_keys.openai;
+
+    // Name the two engines whenever anything changed. Which one is listening
+    // was the question that cost an evening, and it should be answerable from
+    // the log without waiting for the next sound to arrive.
+    if changed {
+        info!(
+            "Live settings adopted. Wake: {:?}, commands: {:?}.",
+            live.wake_word_engine, live.speech_to_text_engine
+        );
+    }
 
     Ok(changed)
 }

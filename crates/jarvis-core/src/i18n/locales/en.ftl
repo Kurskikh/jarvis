@@ -61,7 +61,7 @@ settings-voice-desc =
     Not all commands work with all sound packs.
     Click to listen the preview of sound.
 settings-wake-word-engine = Wake word engine
-settings-wake-word-desc = Choose the engine for wake word recognition. A change takes effect on the next start.
+settings-wake-word-desc = Choose the engine that listens for the name. A change applies at once, from the next thing you say.
 settings-wake-score = Wake word strictness
 settings-wake-score-desc = How closely the wake word has to match. Tune it from the log rather than by feel: every attempt writes down the score it reached and the gate it had to clear. Lower answers more readily but also to other people talking; higher means calling twice, and the start of the command is lost with the first try. From 30 to 95, 62 by default. Applies to Rustpotter.
 settings-stt-engine = Speech recognition
@@ -72,7 +72,7 @@ settings-noise-suppression-desc = Reduces background noise. May negatively affec
 settings-vad = Voice detection (VAD)
 settings-vad-desc = Skips silence, saves CPU resources.
 settings-stt = Command recogniser
-settings-stt-desc = What transcribes whatever is said AFTER the wake word. The name itself is always caught by Vosk and this choice does not touch it: that needs a grammar of eight words, or the assistant would be decoding every sound in the room all day. A change takes effect on the next start.
+settings-stt-desc = What transcribes whatever is said AFTER the wake word. The name itself is always caught by Vosk and this choice does not touch it: that needs a grammar of eight words, or the assistant would be decoding every sound in the room all day. A change applies at once, from the next thing you say.
 settings-vad-threshold = Loudness threshold
 settings-vad-threshold-desc = How loud a sound has to be before it counts as speech. This compares loudness, it does not understand speech: lower and the assistant wakes on a fan, higher and a quiet voice goes unheard. It depends on the microphone and the room, which is why it is a setting. From 10 to 2000, 100 by default.
 settings-speech-pause = Pause that ends a phrase (ms)
@@ -265,6 +265,8 @@ settings-llm-tts-instruct = Voice instruction
 settings-llm-tts-instruct-desc = How to speak, not what to say. Empty means plain cloning from your sample, and that is the recommended setting: an instruction drops the manner copied from the sample and keeps only the timbre. Measured: a Chinese instruction works, an English one mangles words, a Russian one gets read aloud instead of the answer.
 settings-follow-up = Keep listening after an answer
 settings-follow-up-desc = Seconds to stay listening once the assistant has finished speaking, so the next question needs no wake word. The countdown starts when it stops talking, not when you asked. 0 turns it off.
+settings-dialogue-exit = Silence that ends a dialogue
+settings-dialogue-exit-desc = How many seconds of silence end a conversation started with "let's talk". Counted from the moment the assistant stops speaking. You can also leave out loud: "stop", "enough", "goodbye". Inside a dialogue no commands are matched - everything said goes to the language model, and the spoken placeholders are not played.
 settings-duck = Quiet everything else
 settings-duck-desc = While jarvis is listening and answering, music and other sounds drop and then come back. Only what is actually playing is touched, and only through the Windows mixer - the master volume is left alone. If you move an application's slider yourself in the meantime, it stays where you put it.
 settings-duck-level = How much is left

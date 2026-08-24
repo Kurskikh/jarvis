@@ -16,7 +16,8 @@ pub struct JCommandsList {
 pub struct JCommand {
     pub id: String,
 
-    // Available command types are: "lua", "ahk", "cli", "voice", "terminate", "stop_chaining"
+    // Available command types are: "lua", "ahk", "cli", "voice", "terminate",
+    // "stop_chaining", "dialogue"
     #[serde(rename = "type")]
     pub cmd_type: String,
     

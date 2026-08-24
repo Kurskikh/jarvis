@@ -74,6 +74,22 @@ pub fn init() -> Result<(), ()> {
     Ok(())
 }
 
+// Forget everything heard so far.
+//
+// Needed when this engine is handed the microphone part-way through a sound:
+// what it holds then is the tail of a word whose beginning it never got, and
+// judging a name on that is how phantoms are born.
+pub fn reset() {
+    if let Ok(mut pending) = PENDING.lock() {
+        pending.clear();
+    }
+    if let Some(r) = RUSTPOTTER.get() {
+        if let Ok(mut rustpotter) = r.lock() {
+            rustpotter.reset();
+        }
+    }
+}
+
 pub fn data_callback(frame_buffer: &[i16]) -> Option<i32> {
     let mut lock = RUSTPOTTER.get().unwrap().lock();
     let rustpotter = lock.as_mut().unwrap();

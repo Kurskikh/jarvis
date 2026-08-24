@@ -151,6 +151,10 @@ pub struct Settings {
     #[serde(default = "default_follow_up_secs")]
     pub follow_up_secs: u64,
 
+    // seconds of silence that end a dialogue, once one has been started
+    #[serde(default = "default_dialogue_exit_secs")]
+    pub dialogue_exit_secs: u64,
+
     pub api_keys: ApiKeys,
 }
 
@@ -179,6 +183,7 @@ fn default_llm_tts_url() -> String { config::DEFAULT_LLM_TTS_URL.to_string() }
 fn default_llm_tts_mode() -> String { config::DEFAULT_LLM_TTS_MODE.to_string() }
 fn default_llm_tts_python() -> String { config::DEFAULT_LLM_TTS_PYTHON.to_string() }
 fn default_follow_up_secs() -> u64 { config::DEFAULT_FOLLOW_UP_SECS }
+fn default_dialogue_exit_secs() -> u64 { config::DEFAULT_DIALOGUE_EXIT_SECS }
 
 // characters that must not appear in an endpoint url, because the WHATWG
 // parser inside `url` - the one reqwest actually resolves with - reads them
@@ -328,6 +333,7 @@ impl Settings {
             "llm_tts_script"            => Some(self.llm_tts_script.clone()),
             "llm_tts_instruct"          => Some(self.llm_tts_instruct.clone()),
             "follow_up_secs"            => Some(self.follow_up_secs.to_string()),
+            "dialogue_exit_secs"        => Some(self.dialogue_exit_secs.to_string()),
             "api_key__openai"           => Some(self.api_keys.openai.clone()),
             _ => None,
         }
@@ -621,6 +627,18 @@ impl Settings {
                 }
                 self.follow_up_secs = secs;
             }
+            "dialogue_exit_secs" => {
+                let secs: u64 = val.trim().parse()
+                    .map_err(|_| format!("expected a whole number of seconds, got: '{}'", val))?;
+                if !(config::DIALOGUE_EXIT_SECS_MIN..=config::DIALOGUE_EXIT_SECS_MAX)
+                    .contains(&secs)
+                {
+                    return Err(format!("dialogue pause must be {}-{} seconds, got: {}",
+                                       config::DIALOGUE_EXIT_SECS_MIN,
+                                       config::DIALOGUE_EXIT_SECS_MAX, secs));
+                }
+                self.dialogue_exit_secs = secs;
+            }
             "api_key__openai" => {
                 self.api_keys.openai = val.to_string();
             }
@@ -681,6 +699,7 @@ impl Settings {
             "llm_tts_script",
             "llm_tts_instruct",
             "follow_up_secs",
+            "dialogue_exit_secs",
             "api_key__openai",
         ]
     }
@@ -781,6 +800,7 @@ impl Default for Settings {
             llm_tts_script: String::new(),
             llm_tts_instruct: String::new(),
             follow_up_secs: config::DEFAULT_FOLLOW_UP_SECS,
+            dialogue_exit_secs: config::DEFAULT_DIALOGUE_EXIT_SECS,
 
             api_keys: ApiKeys {
                 openai: String::from(""),

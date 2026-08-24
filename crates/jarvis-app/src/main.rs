@@ -199,10 +199,10 @@ fn main() -> Result<(), String> {
                 // read guard, so the file read goes on a task and this returns
                 // immediately.
                 tokio::spawn(async move {
-                    match db::reload_llm_settings() {
-                        Ok(true)  => info!("LLM settings reloaded from disk."),
-                        Ok(false) => debug!("LLM settings reload: nothing changed."),
-                        Err(e)    => warn!("LLM settings reload failed: {}. \
+                    match db::reload_live_settings() {
+                        Ok(true)  => info!("Live settings reloaded from disk."),
+                        Ok(false) => debug!("Live settings reload: nothing changed."),
+                        Err(e)    => warn!("Live settings reload failed: {}. \
                                             The running assistant keeps the values it started with.", e),
                     }
                 });

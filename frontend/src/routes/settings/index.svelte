@@ -183,6 +183,7 @@
     let llmTtsScript = ""
     let llmTtsInstruct = ""
     let followUpSecs = 8
+    let dialogueExitSecs = 4
     let duckOthers = true
     let llmHistory = false
     let llmHistoryTurns = 4
@@ -250,6 +251,8 @@
     // Settings::set refuses it and db_write_many is all-or-nothing
     $: followUpToSave = Math.min(120, Math.max(0,
         Math.round(Number.isFinite(+followUpSecs) ? +followUpSecs : 8)))
+    $: dialogueExitToSave = Math.min(60, Math.max(2,
+        Math.round(Number.isFinite(+dialogueExitSecs) ? +dialogueExitSecs : 4)))
 
     $: llmTtsHalfConfigured =
         (llmTtsPython.trim() === "") !== (llmTtsScript.trim() === "")
@@ -328,7 +331,8 @@
                     llm_history_idle_min: llmHistoryIdleMin.toString(),
                     duck_others: duckOthers.toString(),
                     duck_level: duckLevel.toString(),
-                    follow_up_secs: followUpToSave.toString()
+                    follow_up_secs: followUpToSave.toString(),
+                    dialogue_exit_secs: dialogueExitToSave.toString()
                 }
             })
 
@@ -443,7 +447,7 @@
                    llmEnabledRaw, llmBaseUrlRaw, llmModelRaw,
                    llmTimeoutRaw, llmMaxTokensRaw, llmThinkingRaw, llmSystemPromptRaw, llmAllowRemoteRaw,
                    llmSpeakRaw, llmTtsUrlRaw, llmTtsModeRaw, llmTtsPythonRaw, llmTtsScriptRaw,
-                   followUpRaw, llmTtsInstructRaw,
+                   followUpRaw, dialogueExitRaw, llmTtsInstructRaw,
                    llmHistoryRaw, llmHistoryTurnsRaw, llmHistoryIdleRaw,
                    duckOthersRaw, duckLevelRaw,
                    sttEngineRaw, vadThresholdRaw, speechPauseRaw,
@@ -476,6 +480,7 @@
                 invoke<string>("db_read", { key: "llm_tts_python" }),
                 invoke<string>("db_read", { key: "llm_tts_script" }),
                 invoke<string>("db_read", { key: "follow_up_secs" }),
+                invoke<string>("db_read", { key: "dialogue_exit_secs" }),
                 invoke<string>("db_read", { key: "llm_tts_instruct" }),
                 invoke<string>("db_read", { key: "llm_history" }),
                 invoke<string>("db_read", { key: "llm_history_turns" }),
@@ -526,6 +531,7 @@
             // "" from an older app.db must not read as 0, which would
             // silently disable a feature nobody turned off
             followUpSecs = followUpRaw === "" ? 8 : (parseInt(followUpRaw) || 0)
+            dialogueExitSecs = parseInt(dialogueExitRaw) || 4
             llmTtsInstruct = llmTtsInstructRaw
             // remembering defaults OFF, so "" from an older app.db must read
             // as false - the opposite of the llm_speak case just above
@@ -1115,6 +1121,14 @@
             <Text size="sm" color="gray">{t('settings-follow-up-desc')}</Text>
             <Space h="xs" />
             <NumberInput min={0} max={120} step={1} variant="filled" bind:value={followUpSecs} />
+        </InputWrapper>
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-dialogue-exit')}>
+            <Text size="sm" color="gray">{t('settings-dialogue-exit-desc')}</Text>
+            <Space h="xs" />
+            <NumberInput min={2} max={60} step={1} variant="filled" bind:value={dialogueExitSecs} />
         </InputWrapper>
 
         <Space h="xl" />

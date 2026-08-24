@@ -1,0 +1,55 @@
+# Starting a conversation.
+#
+# Ordinary listening matches every phrase against the command packs first and
+# only asks the language model when nothing fits. That is right for commands and
+# wrong for talking: each turn is preceded by "думаю над ответом", and a
+# sentence that happens to resemble a command gets executed instead of answered.
+#
+# Inside the dialogue nothing is matched at all. Every phrase goes straight to
+# the model, with no filler before the answer. The exit phrases in
+# config::get_dialogue_exit_phrases are checked here instead of by these packs,
+# precisely because the packs are not consulted - so "стоп" still works while
+# "громче" does not, and that is deliberate.
+#
+# It ends on its own after the silence set in the settings window, counted from
+# the moment the assistant stops speaking rather than from the question.
+
+[[commands]]
+id = "start_dialogue"
+type = "dialogue"
+sounds.ru = ["reply1", "reply2", "reply3"]
+sounds.en = ["reply1", "reply2", "reply3"]
+sounds.ua = ["reply1", "reply2", "reply3"]
+
+phrases.ru = [
+    "давай поговорим",
+    "поговорим",
+    "поболтаем",
+    "давай поболтаем",
+    "режим диалога",
+    "включи диалог",
+    "начнём диалог",
+    "начнем диалог",
+    "давай пообщаемся",
+    "пообщаемся",
+]
+
+phrases.ua = [
+    "давай поговоримо",
+    "поговоримо",
+    "побалакаємо",
+    "давай побалакаємо",
+    "режим діалогу",
+    "увімкни діалог",
+    "почнемо діалог",
+]
+
+phrases.en = [
+    "lets talk",
+    "let us talk",
+    "lets chat",
+    "dialogue mode",
+    "start a dialogue",
+    "start dialogue",
+    "conversation mode",
+]

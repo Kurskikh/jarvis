@@ -307,6 +307,13 @@ pub fn execute_command(cmd_path: &PathBuf, cmd_config: &JCommand, phrase: Option
         // STOP CHANING
         "stop_chaining" => Ok(false),
 
+        // Hand the microphone to the dialogue.
+        //
+        // Nothing to run: the whole effect is on the listening loop, which sees
+        // the type on the way back and switches mode. Ok(false) because it does
+        // NOT chain in the ordinary sense - what follows is not another command.
+        "dialogue" => Ok(false),
+
         // other
         _ => {
             error!("Command type unknown: {}", cmd_config.cmd_type);

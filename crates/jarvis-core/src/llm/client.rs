@@ -39,7 +39,7 @@ const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(4);
 // nothing in this builder is per-config: base_url and the token travel on the
 // request, so unlike commands/ahk.rs this cache never needs a key and never
 // needs invalidating. changing either setting takes effect as soon as the live
-// settings carry the new value - db::reload_llm_settings(), fired by the GUI
+// settings carry the new value - db::reload_live_settings(), fired by the GUI
 // over IpcAction::ReloadSettings after a save.
 static CLIENT: Lazy<Result<Client, String>> = Lazy::new(|| {
     Client::builder()

@@ -392,6 +392,17 @@ pub const LLM_HISTORY_IDLE_MIN_MAX: u32 = 240;
 pub const DEFAULT_FOLLOW_UP_SECS: u64 = 8;
 pub const FOLLOW_UP_SECS_MAX: u64 = 120;   // 0 disables it
 
+// How long the dialogue waits before deciding the conversation is over.
+//
+// Shorter than the follow-up window on purpose. A follow-up is an afterthought
+// to a command and can afford to wait; a dialogue is a conversation, and one
+// that keeps the microphone open long after the last word has been said is
+// listening to the room rather than to a person. The clock does not start until
+// the assistant has finished speaking - see the llm_busy check in the loop.
+pub const DEFAULT_DIALOGUE_EXIT_SECS: u64 = 4;
+pub const DIALOGUE_EXIT_SECS_MIN: u64 = 2;
+pub const DIALOGUE_EXIT_SECS_MAX: u64 = 60;
+
 // ETC
 pub const CMD_RATIO_THRESHOLD: f64 = 75f64;
 pub const CMS_WAIT_DELAY: std::time::Duration = std::time::Duration::from_secs(15);
@@ -446,6 +457,32 @@ pub fn get_phrases_to_remove(lang: &str) -> &'static [&'static str] {
             "please", "say", "show", "tell", "hey",
         ],
         _ => &["jarvis"],
+    }
+}
+
+// Ways of saying "we are done here", checked inside the dialogue.
+//
+// Separate from the stop command pack, and deliberately so: inside a dialogue
+// nothing is matched against commands at all, so the pack is not consulted and
+// these have to stand on their own. They are compared as whole phrases against
+// the whole utterance, not searched for inside it - otherwise "хватит об этом,
+// расскажи про другое" would end a conversation it was trying to steer.
+pub fn get_dialogue_exit_phrases(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "ru" => &[
+            "стоп", "хватит", "всё", "все", "конец", "закончили", "выход",
+            "хватит болтать", "закончим", "давай закончим", "пока",
+            "спасибо всё", "спасибо все", "до свидания",
+        ],
+        "ua" => &[
+            "стоп", "досить", "все", "кінець", "закінчили", "вихід",
+            "закінчимо", "давай закінчимо", "бувай", "до побачення",
+        ],
+        "en" => &[
+            "stop", "enough", "that is all", "thats all", "we are done",
+            "were done", "goodbye", "bye", "exit", "end", "thank you that is all",
+        ],
+        _ => &["stop"],
     }
 }
 
