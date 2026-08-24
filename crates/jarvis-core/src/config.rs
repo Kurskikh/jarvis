@@ -168,9 +168,40 @@ pub const DEFAULT_NOISE_SUPPRESSION: NoiseSuppressionBackend = NoiseSuppressionB
 pub const DEFAULT_GAIN_NORMALIZER: bool = false;
 
 // VAD settings
-pub const VAD_ENERGY_THRESHOLD: f32 = 100.0;  // RMS threshold for energy-based VAD
 pub const VAD_NNNOISELESS_THRESHOLD: f32 = 0.8;  // probability threshold for nnnoiseless
-pub const VAD_SILENCE_FRAMES: u32 = 15;  // frames of silence before speech end (~480ms)
+
+// How loud a frame has to be before it counts as speech, as RMS across the
+// frame. A setting rather than a constant because it cannot be right for
+// everyone: it is a bare loudness comparison with no notion of speech at all,
+// so a noisy room wakes the assistant on a fan and a quiet voice goes unheard.
+// The right value depends on the microphone and the room, which is exactly
+// what a setting is for.
+pub const DEFAULT_VAD_ENERGY_THRESHOLD: u32 = 100;
+pub const VAD_ENERGY_THRESHOLD_MIN: u32 = 10;
+pub const VAD_ENERGY_THRESHOLD_MAX: u32 = 2000;
+
+// How long a pause ends a phrase.
+//
+// Streaming recognition will not commit the end of an utterance until it has
+// heard silence after it - measured on T-one, a clip fed with no trailing
+// silence returned "доб" where the speech said "Доброе утро, сэр". This is
+// what it waits for. Vosk decides this for itself and ignores the setting.
+pub const DEFAULT_SPEECH_PAUSE_MS: u32 = 800;
+pub const SPEECH_PAUSE_MS_MIN: u32 = 200;
+pub const SPEECH_PAUSE_MS_MAX: u32 = 3000;
+
+// What the recorder produces and what every recogniser here is told to expect.
+// sherpa resamples to whatever its model wants; saying the wrong number here
+// would simply play the audio at the wrong speed.
+pub const RECOGNISER_SAMPLE_RATE: u32 = 16_000;
+
+// T-one runs on the processor. Four threads keeps it at about twenty times
+// real time without taking the machine over.
+// where the weights live, under the model catalogue
+pub const TONE_MODEL_DIR: &str = "t-one-ru";
+pub const TONE_THREADS: i32 = 4;
+// A spoken command that has run this long without a pause is not a command.
+pub const TONE_MAX_UTTERANCE_SECS: f32 = 20.0;
 
 // gain normalizer settings
 pub const GAIN_TARGET_RMS: f32 = 3000.0;  // target RMS level

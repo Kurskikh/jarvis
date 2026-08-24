@@ -51,7 +51,7 @@ windows-registry = "0.6"
 # that runs on the processor - the wake word stays on Vosk, this is for the
 # command that follows it. The build script fetches a prebuilt library rather
 # than needing CMake.
-sherpa-onnx = "1.13"
+sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"] }
 windows = { version = "0.61", features = ["Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant"] }
 
 fastembed = { version = "^5.8.1", default-features = false, features = ["ort-download-binaries"] }

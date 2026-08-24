@@ -85,6 +85,8 @@ pub fn reload_llm_settings() -> Result<bool, String> {
         || live.llm_system_prompt != on_disk.llm_system_prompt
         || live.llm_allow_remote != on_disk.llm_allow_remote
         || live.llm_speak != on_disk.llm_speak
+        || live.vad_energy_threshold != on_disk.vad_energy_threshold
+        || live.speech_pause_ms != on_disk.speech_pause_ms
         || live.duck_others != on_disk.duck_others
         || live.duck_level != on_disk.duck_level
         || live.llm_history != on_disk.llm_history
@@ -107,6 +109,8 @@ pub fn reload_llm_settings() -> Result<bool, String> {
     live.llm_system_prompt = on_disk.llm_system_prompt;
     live.llm_allow_remote = on_disk.llm_allow_remote;
     live.llm_speak = on_disk.llm_speak;
+    live.vad_energy_threshold = on_disk.vad_energy_threshold;
+    live.speech_pause_ms = on_disk.speech_pause_ms;
     live.duck_others = on_disk.duck_others;
     live.duck_level = on_disk.duck_level;
     live.llm_history = on_disk.llm_history;

@@ -105,8 +105,16 @@ fn task_files_present(task: Task, model_dir: &Path) -> bool {
                     || model_dir.join("model.onnx").is_file())
         }
 
+        // stt/tone.rs hands both files straight to sherpa-onnx. Checked here
+        // so a model whose weights have not been downloaded is simply not
+        // offered, the same as every other task - the alternative is a choice
+        // in the dropdown that fails at startup.
+        Task::Stt => {
+            model_dir.join("model.onnx").is_file() && model_dir.join("tokens.txt").is_file()
+        }
+
         // no descriptor-driven backends for these yet; nothing to verify
-        Task::Vad | Task::NoiseSuppression | Task::Stt => true,
+        Task::Vad | Task::NoiseSuppression => true,
     }
 }
 
@@ -172,6 +180,15 @@ pub fn code_backends(task: Task) -> Vec<BackendOption> {
                 id: "vosk".into(),
                 name: "Vosk".into(),
                 model_id: None,
+                is_default: false,
+            },
+            // The wake word is not affected by this choice - it is always
+            // Vosk, because a restricted grammar is what makes listening for
+            // one name cheap. This picks what transcribes the command.
+            BackendOption {
+                id: "t-one".into(),
+                name: "T-one (Russian, CPU)".into(),
+                model_id: Some("t-one-ru".into()),
                 is_default: false,
             },
         ],

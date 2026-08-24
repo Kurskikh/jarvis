@@ -138,6 +138,7 @@
     let intentBackends: BackendOption[] = []
     let slotsBackends: BackendOption[] = []
     let vadBackends: BackendOption[] = []
+    let sttBackends: BackendOption[] = []
     // the lists above are empty until the registry answers. without this flag
     // the "no slot backends" alert renders on every page open, before we know
     let backendsLoaded = false
@@ -159,6 +160,9 @@
     let selectedVoskModel = ""
     let selectedNoiseSuppression = ""
     let selectedVad = ""
+    let selectedStt = "vosk"
+    let vadEnergyThreshold = 100
+    let speechPauseMs = 800
     let gainNormalizerEnabled = false
     let apiKeyOpenai = ""
 
@@ -261,6 +265,7 @@
     $: intentSelectData = toSelectData(intentBackends, $translations)
     $: slotsSelectData = toSelectData(slotsBackends, $translations)
     $: vadSelectData = toSelectData(vadBackends, $translations)
+    $: sttSelectData = toSelectData(sttBackends, $translations)
 
     // subscribe to stores
     assistantVoice.subscribe(value => {
@@ -295,6 +300,9 @@
 
                     noise_suppression: selectedNoiseSuppression,
                     vad_backend: selectedVad,
+                    speech_to_text_engine: selectedStt,
+                    vad_energy_threshold: vadEnergyThreshold.toString(),
+                    speech_pause_ms: speechPauseMs.toString(),
                     gain_normalizer: gainNormalizerEnabled.toString(),
 
                     api_key__openai: apiKeyOpenai,
@@ -367,7 +375,8 @@
             const [intentOpts, slotsOpts, vadOpts] = await Promise.all([
                 invoke<BackendOption[]>("list_backend_options", { task: "intent" }),
                 invoke<BackendOption[]>("list_backend_options", { task: "slots" }),
-                invoke<BackendOption[]>("list_backend_options", { task: "vad" })
+                invoke<BackendOption[]>("list_backend_options", { task: "vad" }),
+                invoke<BackendOption[]>("list_backend_options", { task: "stt" })
             ])
             intentBackends = intentOpts
             slotsBackends = slotsOpts
@@ -432,7 +441,8 @@
                    llmSpeakRaw, llmTtsUrlRaw, llmTtsModeRaw, llmTtsPythonRaw, llmTtsScriptRaw,
                    followUpRaw, llmTtsInstructRaw,
                    llmHistoryRaw, llmHistoryTurnsRaw, llmHistoryIdleRaw,
-                   duckOthersRaw, duckLevelRaw] = await Promise.all([
+                   duckOthersRaw, duckLevelRaw,
+                   sttEngineRaw, vadThresholdRaw, speechPauseRaw] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
                 invoke<string>("db_read", { key: "intent_backend" }),
@@ -466,7 +476,10 @@
                 invoke<string>("db_read", { key: "llm_history_turns" }),
                 invoke<string>("db_read", { key: "llm_history_idle_min" }),
                 invoke<string>("db_read", { key: "duck_others" }),
-                invoke<string>("db_read", { key: "duck_level" })
+                invoke<string>("db_read", { key: "duck_level" }),
+                invoke<string>("db_read", { key: "speech_to_text_engine" }),
+                invoke<string>("db_read", { key: "vad_energy_threshold" }),
+                invoke<string>("db_read", { key: "speech_pause_ms" })
             ])
 
             selectedMicrophone = mic
@@ -477,6 +490,9 @@
             selectedGlinerModel = glinerModel
             selectedNoiseSuppression = noiseSuppression
             selectedVad = vad
+            selectedStt = sttEngineRaw || "vosk"
+            vadEnergyThreshold = parseInt(vadThresholdRaw) || 100
+            speechPauseMs = parseInt(speechPauseRaw) || 800
             gainNormalizerEnabled = gainNormalizer === "true"
             apiKeyOpenai = openai
 
@@ -535,6 +551,7 @@
             selectedIntentRecognitionEngine = clamp(selectedIntentRecognitionEngine, intentBackends)
             selectedSlotExtractionEngine = clamp(selectedSlotExtractionEngine, slotsBackends)
             selectedVad = clamp(selectedVad, vadBackends)
+            selectedStt = clamp(selectedStt, sttBackends)
 
             // Not awaited: the list is a convenience, and a server that is not
             // running answers only after a connect timeout. Awaiting it would
@@ -783,6 +800,18 @@
 
         <Space h="md" />
 
+        {#key sttSelectData}
+        <NativeSelect
+            data={sttSelectData}
+            label={t('settings-stt')}
+            description={t('settings-stt-desc')}
+            variant="filled"
+            bind:value={selectedStt}
+        />
+        {/key}
+
+        <Space h="md" />
+
         {#key vadSelectData}
         <NativeSelect
             data={vadSelectData}
@@ -792,6 +821,22 @@
             bind:value={selectedVad}
         />
         {/key}
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-vad-threshold')}>
+            <Text size="sm" color="gray">{t('settings-vad-threshold-desc')}</Text>
+            <Space h="xs" />
+            <NumberInput min={10} max={2000} step={10} variant="filled" bind:value={vadEnergyThreshold} />
+        </InputWrapper>
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-speech-pause')}>
+            <Text size="sm" color="gray">{t('settings-speech-pause-desc')}</Text>
+            <Space h="xs" />
+            <NumberInput min={200} max={3000} step={50} variant="filled" bind:value={speechPauseMs} />
+        </InputWrapper>
 
         <Space h="md" />
 

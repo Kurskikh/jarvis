@@ -1,0 +1,20 @@
+# Read by jarvis-core: models::catalog::scan_models() -> load_model_def()
+#
+# The weights are NOT in version control - 138 MB of them - and this descriptor
+# is all that ships. scan_models() checks for model.onnx and tokens.txt before
+# publishing the model, so until they are here the engine is not offered in
+# settings and cannot be stored. Drop the files in and it appears.
+#
+# Where they come from:
+#   https://huggingface.co/csukuangfj/sherpa-onnx-streaming-t-one-russian-2025-09-08
+# Two files, model.onnx and tokens.txt, straight into this directory.
+#
+# What it is for: the COMMAND, never the wake word. The wake word stays on Vosk
+# because catching one name out of a stream is done with a grammar of eight
+# words, and a CTC model has no such lever.
+
+[model]
+id = "t-one-ru"
+name = "T-one (Russian, CPU)"
+tasks = ["stt"]
+description = "T-one streaming CTC for Russian, exported for sherpa-onnx. Runs on the processor at about twenty times real time and needs no GPU, which leaves the card to the language model and the voice. Built for telephony; sherpa resamples on the way in and it transcribes microphone speech accurately - measured word for word against the shipped voice clips."

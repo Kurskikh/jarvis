@@ -98,6 +98,12 @@ pub struct Settings {
     #[serde(default = "default_llm_speak")]
     pub llm_speak: bool,
 
+    // how loud counts as speech, and how long a pause ends a phrase
+    #[serde(default = "default_vad_energy_threshold")]
+    pub vad_energy_threshold: u32,
+    #[serde(default = "default_speech_pause_ms")]
+    pub speech_pause_ms: u32,
+
     // quiet everything else while a turn is in progress?
     #[serde(default = "default_duck_others")]
     pub duck_others: bool,
@@ -157,6 +163,8 @@ fn default_llm_thinking() -> String { config::DEFAULT_LLM_THINKING.to_string() }
 fn default_llm_system_prompt() -> String { config::DEFAULT_LLM_SYSTEM_PROMPT.to_string() }
 fn default_llm_allow_remote() -> bool { config::DEFAULT_LLM_ALLOW_REMOTE }
 fn default_llm_speak() -> bool { config::DEFAULT_LLM_SPEAK }
+fn default_vad_energy_threshold() -> u32 { config::DEFAULT_VAD_ENERGY_THRESHOLD }
+fn default_speech_pause_ms() -> u32 { config::DEFAULT_SPEECH_PAUSE_MS }
 fn default_duck_others() -> bool { config::DEFAULT_DUCK_OTHERS }
 fn default_duck_level() -> u32 { config::DEFAULT_DUCK_LEVEL }
 fn default_llm_history() -> bool { config::DEFAULT_LLM_HISTORY }
@@ -281,7 +289,13 @@ impl Settings {
             "vad_backend"               => Some(self.vad_backend.clone()),
             "selected_gliner_model"     => Some(self.gliner_model.clone()),
             "selected_vosk_model"       => Some(self.vosk_model.clone()),
-            "speech_to_text_engine"     => Some(format!("{:?}", self.speech_to_text_engine)),
+            // the same spelling the backend list offers, not the Debug one:
+            // a getter answering "TOne" against an option called "t-one" is a
+            // picker that never matches its own value
+            "speech_to_text_engine"     => Some(match self.speech_to_text_engine {
+                SpeechToTextEngine::Vosk => "vosk".to_string(),
+                SpeechToTextEngine::TOne => "t-one".to_string(),
+            }),
             "noise_suppression"         => Some(format!("{:?}", self.noise_suppression)),
             "gain_normalizer"           => Some(self.gain_normalizer.to_string()),
             "language"                  => Some(self.language.clone()),
@@ -295,6 +309,8 @@ impl Settings {
             "llm_system_prompt"         => Some(self.llm_system_prompt.clone()),
             "llm_allow_remote"          => Some(self.llm_allow_remote.to_string()),
             "llm_speak"                 => Some(self.llm_speak.to_string()),
+            "vad_energy_threshold"      => Some(self.vad_energy_threshold.to_string()),
+            "speech_pause_ms"           => Some(self.speech_pause_ms.to_string()),
             "duck_others"               => Some(self.duck_others.to_string()),
             "duck_level"                => Some(self.duck_level.to_string()),
             "llm_history"               => Some(self.llm_history.to_string()),
@@ -456,6 +472,37 @@ impl Settings {
                     "false" => false,
                     _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
                 };
+            }
+            // The engine has had a getter and no setter since it was added, so
+            // the window offered a choice that could not be made and the
+            // running assistant read a constant instead of either. All three
+            // now agree.
+            "speech_to_text_engine" => {
+                self.speech_to_text_engine = match val.to_lowercase().as_str() {
+                    "vosk"  => SpeechToTextEngine::Vosk,
+                    "t-one" | "tone" => SpeechToTextEngine::TOne,
+                    _ => return Err(format!("unknown speech-to-text engine: '{}'", val)),
+                };
+            }
+            "vad_energy_threshold" => {
+                let n = val.parse::<u32>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                if !(config::VAD_ENERGY_THRESHOLD_MIN..=config::VAD_ENERGY_THRESHOLD_MAX).contains(&n) {
+                    return Err(format!("loudness must be {}-{}, got: '{}'",
+                                       config::VAD_ENERGY_THRESHOLD_MIN,
+                                       config::VAD_ENERGY_THRESHOLD_MAX, val));
+                }
+                self.vad_energy_threshold = n;
+            }
+            "speech_pause_ms" => {
+                let n = val.parse::<u32>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                if !(config::SPEECH_PAUSE_MS_MIN..=config::SPEECH_PAUSE_MS_MAX).contains(&n) {
+                    return Err(format!("pause must be {}-{} ms, got: '{}'",
+                                       config::SPEECH_PAUSE_MS_MIN,
+                                       config::SPEECH_PAUSE_MS_MAX, val));
+                }
+                self.speech_pause_ms = n;
             }
             "duck_others" => {
                 self.duck_others = match val.to_lowercase().as_str() {
@@ -701,6 +748,8 @@ impl Default for Settings {
             llm_system_prompt: config::DEFAULT_LLM_SYSTEM_PROMPT.to_string(),
             llm_allow_remote: config::DEFAULT_LLM_ALLOW_REMOTE,
             llm_speak: config::DEFAULT_LLM_SPEAK,
+            vad_energy_threshold: config::DEFAULT_VAD_ENERGY_THRESHOLD,
+            speech_pause_ms: config::DEFAULT_SPEECH_PAUSE_MS,
             duck_others: config::DEFAULT_DUCK_OTHERS,
             duck_level: config::DEFAULT_DUCK_LEVEL,
             llm_history: config::DEFAULT_LLM_HISTORY,

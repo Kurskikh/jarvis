@@ -13,9 +13,13 @@ pub enum NoiseSuppressionBackend {
     Nnnoiseless,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum SpeechToTextEngine {
     Vosk,
+    // T-one through sherpa-onnx: streaming, Russian, on the processor. For
+    // the command only - the wake word stays on Vosk, whose restricted
+    // grammar is what makes catching one word out of a stream cheap.
+    TOne,
 }
 
 #[derive(PartialEq, Debug)]
