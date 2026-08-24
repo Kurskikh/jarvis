@@ -79,3 +79,8 @@ llm = ["reqwest", "tokio"]
 # downloads a prebuilt library, and a build that does not need it should not
 # have to reach the network for one.
 sherpa = ["sherpa-onnx"]
+
+# a measurement, not a feature: it needs the optional recogniser
+[[example]]
+name = "tone_probe"
+required-features = ["sherpa"]
