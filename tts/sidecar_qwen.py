@@ -1755,10 +1755,12 @@ function modeModelNote(){
   const id = modeModelId()
   const known = MODELS.find(x => x.id === id)
   const here = known ? (known.on_disk ? 'на диске' : 'надо скачать') : ''
-  const loaded = (CURRENT_MODEL === id)
+  const inMemory = (CURRENT_MODEL === id) && MODEL_IN_MEMORY
   $('modemodel').textContent = id.split('/').pop() + (here ? ' ' + DOT + ' ' + here : '')
-    + (loaded ? ' ' + DOT + ' загружена' : '')
-  $('modeload').disabled = loaded
+    + (inMemory ? ' ' + DOT + ' в памяти' : '')
+  // only a model that is genuinely loaded has nothing left to do
+  $('modeload').disabled = inMemory || BUSY
+  showModelNote()
 }
 
 function setMode(which){
@@ -1791,8 +1793,12 @@ function setMode(which){
 
 async function modeLoad(){
   const id = modeModelId()
+  if(![...$('model_id').options].some(o => o.value === id)){
+    $('modemodel').textContent = 'сайдкар не знает такой модели: ' + id
+    return
+  }
   $('model_id').value = id
-  await applyModel()
+  await applyModel(true)
 }
 
 function applyKind(h){
@@ -1859,6 +1865,7 @@ async function refresh(){
     }
     if(h.language) $('language').value = h.language
     CURRENT_MODEL = h.model || ''
+    MODEL_IN_MEMORY = !!h.ok
     applyKind(h)
     modeModelNote()
     showLoad(h.loading)
@@ -1963,7 +1970,12 @@ function addItem(text, parts, took, ended){
   el.appendChild(dl)
   $('list').prepend(el)
 }
-let MODELS=[], CURRENT_MODEL=''
+// Two different facts, and conflating them disabled the load button on a
+// model that was merely SELECTED: /health reports `model` - which checkpoint
+// the sidecar is set to - and `ok` - whether its weights are actually in
+// video memory. The header said "модель не в памяти" while the button beside
+// it said "загружена" and refused to be pressed.
+let MODELS=[], CURRENT_MODEL='', MODEL_IN_MEMORY=false
 const DOT='\u00b7'
 async function loadModels(){
   try{
@@ -1979,14 +1991,22 @@ async function loadModels(){
   }catch(e){}
 }
 function showModelNote(){
-  const m=MODELS.find(x=>x.id===$('model_id').value)
+  // the note for the model the MODE points at, not for whatever the hidden
+  // picker happens to hold - they parted ways when the picker stopped being
+  // the thing anybody touched
+  const m=MODELS.find(x=>x.id===(typeof modeModelId==='function' ? modeModelId() : $('model_id').value))
   $('model_note').textContent=m?m.note:''
   $('model_note').className='meta'+(m&&!m.clones?' warn':'')
 }
-async function applyModel(){
+async function applyModel(asked){
   const id=$('model_id').value
   const m=MODELS.find(x=>x.id===id)
-  if(m && !m.clones &&
+  // Asked only when the model is chosen without saying why. Coming from a mode
+  // strip, the mode already said it: picking "Голос по описанию" IS the
+  // statement that the reference is not being used, and a dialog repeating it
+  // on every press is a dialog people dismiss without reading - which is how a
+  // press ended up doing nothing at all.
+  if(!asked && m && !m.clones &&
      !confirm('Эта модель не клонирует голос по образцу. Джарвис будет говорить '
               +'чужим голосом. Всё равно загрузить?')) return
   const note=$('model_note')
