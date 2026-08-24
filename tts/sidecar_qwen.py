@@ -97,7 +97,10 @@ def _cache_bytes(model_id):
     wondering whether it hung.
     """
     folder = "models--" + model_id.replace("/", "--")
-    root = Path(os.environ.get("HF_HOME", "")) / "hub" / folder
+    # blobs only. Every file under snapshots/ is a hard link to one of these,
+    # so walking the whole tree counts each weight twice - which it did, and
+    # reported a 4.2 GB model as 8.5 GB on disk.
+    root = Path(os.environ.get("HF_HOME", "")) / "hub" / folder / "blobs"
     if not root.exists():
         return 0
     total = 0
@@ -980,7 +983,18 @@ def api_reference_audio():
 
 @app.get("/models")
 def api_models():
-    return {"current": CFG.model_id, "known": KNOWN_MODELS}
+    """
+    What can be loaded, and which of them is already on this disk.
+
+    The size matters to the person choosing: picking one that is not here yet
+    means several gigabytes off the network before anything is heard, and the
+    old list gave no hint which was which.
+    """
+    out = []
+    for m in KNOWN_MODELS:
+        mb = round(_cache_bytes(m["id"]) / 2**20)
+        out.append(dict(m, cached_mb=mb, on_disk=mb > 100))
+    return {"current": CFG.model_id, "known": out}
 
 
 @app.post("/model")
@@ -1584,7 +1598,7 @@ async function refresh(){
 }
 // While a model is loading the page follows it once a second; the rest of the
 // time five seconds is plenty and the counters are not free.
-let FAST=null
+let FAST=null, BUSY=false, WASBUSY=false
 function watchLoad(on){
   if(on && !FAST){ FAST = setInterval(refresh, 1000) }
   if(!on && FAST){ clearInterval(FAST); FAST = null }
@@ -1592,6 +1606,8 @@ function watchLoad(on){
 
 function showLoad(l){
   const bar = $('loadbar'), note = $('loadnote')
+  WASBUSY = BUSY
+  BUSY = !!(l && l.busy)
   if(l && l.busy){
     bar.className = 'progress on'
     // only while it is arriving: once the weights are on disk their size is
@@ -1608,7 +1624,8 @@ function showLoad(l){
   watchLoad(false)
   if(l && l.error){ note.className = 'meta warn'; note.textContent = l.error }
   else if(l && l.took){ note.className = 'meta'
-    note.textContent = 'загружено за ' + l.took + ' с' }
+    note.textContent = 'загружено за ' + l.took + ' с'
+    if(WASBUSY) loadModels() }
   else { note.textContent = '' }
 }
 
@@ -1678,6 +1695,7 @@ async function loadModels(){
     sel.innerHTML=MODELS.map(m=>
       '<option value="'+m.id+'"'+(m.id===d.current?' selected':'')+'>'
       +m.id.replace('Qwen/Qwen3-TTS-12Hz-','')+(m.clones?'':'  \u2014 без клонирования')
+      +(m.on_disk ? '  \u00b7 на диске' : '  \u00b7 надо скачать')
       +'</option>').join('')
     showModelNote()
   }catch(e){}
@@ -1694,13 +1712,25 @@ async function applyModel(){
      !confirm('Эта модель не клонирует голос по образцу. Джарвис будет говорить '
               +'чужим голосом. Всё равно загрузить?')) return
   const note=$('model_note')
-  note.className='meta'; note.textContent='загружаю... первая загрузка качает гигабайты'
+  note.className='meta'
+  note.textContent = (m && !m.on_disk)
+    ? 'скачиваю модель, это несколько гигабайт \u2014 ход внизу под кнопками загрузки'
+    : 'загружаю \u2014 ход внизу под кнопками загрузки'
   try{
     const r=await fetch('/model',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model_id:id})})
     const d=await r.json()
     if(d.error){ note.className='meta warn'; note.textContent=d.error; return }
-    note.textContent=d.changed?('загружена за '+d.took_secs+' с'):'уже была загружена'
+    // The request comes straight back now - the load runs on a thread. Reading
+    // "changed" here is what made this report "уже была загружена" for a model
+    // that had not been fetched at all. Follow /health instead, closely, until
+    // the loader admits it has started.
+    watchLoad(true)
+    for(let i=0;i<10;i++){
+      await new Promise(r2=>setTimeout(r2,400))
+      await refresh()
+      if(BUSY) break
+    }
   }catch(e){ note.className='meta warn'; note.textContent=String(e) }
   finally{ refresh() }
 }
