@@ -425,6 +425,9 @@ fn read_segment(
     // Did this transcript settle too quickly to have had speech in it? See the
     // note on the single-word rule below.
     settled_fast: bool,
+    // Was this transcript decoded out of the primer - the very audio the wake
+    // detector matched? Such a decode is held to a stricter standard below.
+    from_primer: bool,
 ) -> Segment {
     let text = text.trim().to_lowercase();
 
@@ -437,6 +440,19 @@ fn read_segment(
         } else {
             Segment::Command(rest)
         };
+    }
+
+    // No name anywhere in the decode - and this decode came from the PRIMER,
+    // which is the audio the detector itself matched. The name is in that
+    // audio; a decode that lost it did not understand what it heard, and
+    // cannot be trusted to have kept a command either. Dropped whole, however
+    // many words it grew: "джой люкс" off a real log is "джарвис" through the
+    // full vocabulary - two words, past any length rule, and it went to the
+    // language model as a question. The price is paid only by a primed
+    // run-on whose decode also dropped the name, and that person is asked to
+    // repeat rather than answered nonsense.
+    if from_primer {
+        return Segment::WakeEcho;
     }
 
     // No name in the text, and only ONE WORD of that is suspicious enough to
@@ -601,10 +617,13 @@ fn recognize_command(
 
             VadState::VoiceActive => {
                 // feed to STT - unless priming already finished a segment, in
-                // which case that segment goes first
-                if let Some((mut recognized_voice, confidence)) =
-                    primed.take().or_else(|| stt::recognize_command(frame_buffer))
-                {
+                // which case that segment goes first, marked for the stricter
+                // reading it gets in read_segment
+                let (finished, from_primer) = match primed.take() {
+                    Some(segment) => (Some(segment), true),
+                    None => (stt::recognize_command(frame_buffer), false),
+                };
+                if let Some((mut recognized_voice, confidence)) = finished {
                     // the score is reported, not enforced. Vosk's confidence is
                     // a summed log-likelihood: it grows with the length of the
                     // utterance, so "above 120" means one thing for a word and
@@ -634,6 +653,7 @@ fn recognize_command(
                         config::get_wake_phrases(&i18n::get_language()),
                         first_recognition,
                         settled_fast,
+                        from_primer,
                     ) {
                         Segment::WakeEcho => {
                             info!("Discarding the wake word's own audio, heard as '{}'",
@@ -1636,7 +1656,31 @@ mod wake_echo_tests {
 
     #[test]
     fn the_wake_word_alone_right_after_activation_is_its_own_echo() {
-        assert_eq!(read_segment("джарвис", RU, true, true), Segment::WakeEcho);
+        assert_eq!(read_segment("джарвис", RU, true, true, false), Segment::WakeEcho);
+    }
+
+    // The primer is the very audio the detector matched, so the name IS in
+    // it. A primed decode that lost the name is a decode that did not
+    // understand that audio - "джой люкс" off a real log is "джарвис"
+    // through the full vocabulary, two words long, past any length rule -
+    // and it went to the language model as a question.
+    #[test]
+    fn a_primed_decode_without_the_name_is_dropped_whole() {
+        assert_eq!(
+            read_segment("джой люкс", RU, true, true, true),
+            Segment::WakeEcho,
+            "a multi-word mangling of the name must not become a question"
+        );
+    }
+
+    // ...but a primed decode that KEPT the name is trusted the ordinary way:
+    // the name comes off and what was said with it survives.
+    #[test]
+    fn a_primed_run_on_that_kept_the_name_survives() {
+        assert_eq!(
+            read_segment("джарвис включи свет", RU, true, true, true),
+            Segment::Command("включи свет".to_string())
+        );
     }
 
     #[test]
@@ -1647,7 +1691,7 @@ mod wake_echo_tests {
         // question, and jarvis answered it out loud.
         for misheard in ["баржа", "карлос", "райс", "прорыв", "борджа", "каррас"] {
             assert_eq!(
-                read_segment(misheard, RU, true, true),
+                read_segment(misheard, RU, true, true, false),
                 Segment::WakeEcho,
                 "'{}' right after the wake word must not become a question",
                 misheard
@@ -1661,7 +1705,7 @@ mod wake_echo_tests {
         // the command recogniser had no obligation to transcribe it, and T-one
         // did not. Discarding this threw the question away.
         assert_eq!(
-            read_segment("что такое лес", RU, true, true),
+            read_segment("что такое лес", RU, true, true, false),
             Segment::Command("что такое лес".to_string())
         );
     }
@@ -1669,7 +1713,7 @@ mod wake_echo_tests {
     #[test]
     fn two_words_are_enough_to_be_taken_seriously() {
         assert_eq!(
-            read_segment("открой музыку", RU, true, true),
+            read_segment("открой музыку", RU, true, true, false),
             Segment::Command("открой музыку".to_string())
         );
     }
@@ -1682,14 +1726,14 @@ mod wake_echo_tests {
     #[test]
     fn one_word_that_took_its_time_is_a_person_speaking() {
         assert_eq!(
-            read_segment("какдела", RU, true, false),
+            read_segment("какдела", RU, true, false, false),
             Segment::Command("какдела".to_string())
         );
     }
 
     #[test]
     fn one_word_that_arrived_at_once_is_still_the_echo() {
-        assert_eq!(read_segment("с", RU, true, true), Segment::WakeEcho);
+        assert_eq!(read_segment("с", RU, true, true, false), Segment::WakeEcho);
     }
 
     #[test]
@@ -1698,7 +1742,7 @@ mod wake_echo_tests {
         // there is no wake word to expect, and a command must pass through - a
         // guard that swallowed these would make chaining useless.
         assert_eq!(
-            read_segment("баржа", RU, false, true),
+            read_segment("баржа", RU, false, true, false),
             Segment::Command("баржа".to_string())
         );
     }
@@ -1706,14 +1750,14 @@ mod wake_echo_tests {
     #[test]
     fn a_run_on_phrase_keeps_the_part_after_the_wake_word() {
         assert_eq!(
-            read_segment("джарвис как дела", RU, true, true),
+            read_segment("джарвис как дела", RU, true, true, false),
             Segment::Command("как дела".to_string())
         );
     }
 
     #[test]
     fn the_wake_word_alone_later_in_the_turn_starts_a_new_one() {
-        assert_eq!(read_segment("джарвис", RU, false, true), Segment::Reactivate);
+        assert_eq!(read_segment("джарвис", RU, false, true, false), Segment::Reactivate);
     }
 
     #[test]
@@ -1722,7 +1766,7 @@ mod wake_echo_tests {
         // are listed as wake phrases too; all of them must strip the same way
         for spelling in RU {
             assert_eq!(
-                read_segment(&format!("{} открой музыку", spelling), RU, true, true),
+                read_segment(&format!("{} открой музыку", spelling), RU, true, true, false),
                 Segment::Command("открой музыку".to_string()),
                 "spelling '{}'",
                 spelling
@@ -1732,7 +1776,7 @@ mod wake_echo_tests {
 
     #[test]
     fn case_and_surrounding_space_do_not_matter() {
-        assert_eq!(read_segment("  ДЖАРВИС  ", RU, true, true), Segment::WakeEcho);
+        assert_eq!(read_segment("  ДЖАРВИС  ", RU, true, true, false), Segment::WakeEcho);
     }
 }
 
