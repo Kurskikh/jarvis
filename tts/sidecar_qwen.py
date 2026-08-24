@@ -697,16 +697,17 @@ def model_speakers():
     return sorted(str(n) for n in (names or []))
 
 
-def _speaker():
-    """The chosen built-in voice, falling back to whatever the model offers."""
-    wanted = (getattr(CFG, "speaker", "") or "").strip()
+def _speaker(wanted=None):
+    """The built-in voice for this call, or the saved one, or whatever exists."""
+    wanted = (wanted or getattr(CFG, "speaker", "") or "").strip()
     names = model_speakers()
     if wanted and (not names or wanted.lower() in {n.lower() for n in names}):
         return wanted
     return names[0] if names else wanted
 
 
-def synth_once(text: str, instruct: str = "", **knobs):
+def synth_once(text: str, instruct: str = "", speaker: str = "",
+               xvec: bool = False, **knobs):
     """one attempt, whole answer at once; returns (audio, sample_rate)"""
     global _sample_rate
     m = model()
@@ -714,7 +715,7 @@ def synth_once(text: str, instruct: str = "", **knobs):
 
     if kind == "custom":
         wavs, sr = m.generate_custom_voice(
-            text=text, speaker=_speaker(), language=CFG.language,
+            text=text, speaker=_speaker(speaker), language=CFG.language,
             instruct=instruct or None, **knobs)
     elif kind == "design":
         if not instruct:
@@ -725,7 +726,13 @@ def synth_once(text: str, instruct: str = "", **knobs):
     else:
         wavs, sr = m.generate_voice_clone(
             text=text, language=CFG.language,
-            ref_audio=str(_slice_path), ref_text=_prompt_text,
+            ref_audio=str(_slice_path),
+            # x-vector only takes the timbre and skips the transcript entirely.
+            # Worse than the full path, and the reason it is offered: without it
+            # a new reference cannot be used until somebody writes down exactly
+            # what it says, and whisper is not installed here to do that.
+            ref_text="" if xvec else _prompt_text,
+            x_vector_only_mode=xvec,
             instruct=instruct or None, **knobs,
         )
 
@@ -736,7 +743,8 @@ def synth_once(text: str, instruct: str = "", **knobs):
     return np.asarray(audio, dtype="float32").squeeze(), sr
 
 
-def synth_stream(text: str, instruct: str = "", chunk_size: int = None, **knobs):
+def synth_stream(text: str, instruct: str = "", chunk_size: int = None,
+                 speaker: str = "", xvec: bool = False, **knobs):
     """yields (audio_chunk, sample_rate) as the model produces them"""
     global _sample_rate
     m = model()
@@ -745,7 +753,7 @@ def synth_stream(text: str, instruct: str = "", chunk_size: int = None, **knobs)
 
     if kind == "custom":
         stream = m.generate_custom_voice_streaming(
-            text=text, speaker=_speaker(), language=CFG.language,
+            text=text, speaker=_speaker(speaker), language=CFG.language,
             chunk_size=chunk, instruct=instruct or None, **knobs)
     elif kind == "design":
         if not instruct:
@@ -757,7 +765,8 @@ def synth_stream(text: str, instruct: str = "", chunk_size: int = None, **knobs)
     else:
         stream = m.generate_voice_clone_streaming(
             text=text, language=CFG.language,
-            ref_audio=str(_slice_path), ref_text=_prompt_text,
+            ref_audio=str(_slice_path),
+            ref_text="" if xvec else _prompt_text, xvec_only=xvec,
             chunk_size=chunk, instruct=instruct or None, **knobs)
 
     for chunk_audio, sr, _timing in stream:
@@ -768,7 +777,8 @@ def synth_stream(text: str, instruct: str = "", chunk_size: int = None, **knobs)
 
 
 def synth_checked(text: str, tries: int = 3, instruct: str = "",
-                  keep_bad: bool = False, **knobs):
+                  keep_bad: bool = False, speaker: str = "",
+                  xvec: bool = False, **knobs):
     """
     Synthesis with the take checked and retaken if it is no good.
 
@@ -779,7 +789,7 @@ def synth_checked(text: str, tries: int = 3, instruct: str = "",
     last = "no attempt"
     for attempt in range(1, tries + 1):
         try:
-            audio, sr = synth_once(text, instruct, **knobs)
+            audio, sr = synth_once(text, instruct, speaker=speaker, xvec=xvec, **knobs)
         except RuntimeError as e:
             last = f"inference: {e}"
             _stats["retakes"] += 1
@@ -838,6 +848,10 @@ def speak(body: dict = Body(...)):
         return JSONResponse({"error": "text is empty"}, status_code=400)
     mode = (body.get("mode") or "stream").lower()
     instruct = (body.get("instruct") or "").strip()
+    # named per request so the console can try a voice without saving it, and
+    # so Jarvis keeps getting whatever was saved
+    speaker = (body.get("speaker") or "").strip()
+    xvec = bool(body.get("xvec", False))
     knobs = knobs_from(body)
     chunk = body.get("chunk_size")
     try:
@@ -856,7 +870,8 @@ def speak(body: dict = Body(...)):
             if mode == "stream":
                 sent, total = 0, 0.0
                 try:
-                    for audio, sr in synth_stream(text, instruct, chunk_size=chunk, **knobs):
+                    for audio, sr in synth_stream(text, instruct, chunk_size=chunk,
+                                                  speaker=speaker, xvec=xvec, **knobs):
                         # only the first chunk carries leading silence; trimming
                         # later ones would cut into the seam between them
                         if sent == 0:
@@ -876,7 +891,8 @@ def speak(body: dict = Body(...)):
                 # and flag it so an A/B comparison stays honest
                 print("stream produced no audio, falling back to one shot", flush=True)
                 try:
-                    audio, sr = synth_checked(text, instruct=instruct, **knobs)
+                    audio, sr = synth_checked(text, instruct=instruct,
+                                              speaker=speaker, xvec=xvec, **knobs)
                 except RuntimeError as e:
                     print(f"giving up on {text[:60]!r}: {e}", flush=True)
                     return
@@ -887,7 +903,7 @@ def speak(body: dict = Body(...)):
             try:
                 audio, sr = synth_checked(
                     text, tries=1 if keep_bad else 3, instruct=instruct,
-                    keep_bad=keep_bad, **knobs)
+                    keep_bad=keep_bad, speaker=speaker, xvec=xvec, **knobs)
             except RuntimeError as e:
                 # no frames and no END: a truncated body is how the client
                 # learns the answer died, so it stops rather than pretending
@@ -1507,6 +1523,32 @@ button.danger:hover{border-color:var(--warn)}
 <div id="pane-tts">
 
 <div class="card">
+  <div class="tabs" style="margin-bottom:0;border-bottom:0">
+    <button class="tab on" id="mode-clone" onclick="setMode('clone')">Клонирование</button>
+    <button class="tab" id="mode-custom" onclick="setMode('custom')">Готовые голоса</button>
+    <button class="tab" id="mode-design" onclick="setMode('design')">Голос по описанию</button>
+  </div>
+  <div class="meta" id="modenote" style="margin-top:11px"></div>
+  <div class="row" style="margin-top:11px">
+    <div><label>Размер модели</label><select id="modelsize" onchange="modeModelNote()"></select></div>
+    <div><label>Язык</label><select id="language" onchange="saveVoice()"></select></div>
+    <div id="speakerbox"><label>Встроенный голос</label>
+      <select id="speaker" onchange="saveVoice()"></select></div>
+  </div>
+  <div class="bar">
+    <button class="ghost" id="modeload" onclick="modeLoad()">Загрузить эту модель</button>
+    <span id="modemodel" class="meta"></span>
+  </div>
+</div>
+
+<div class="card" id="designcard" style="display:none">
+  <label>Описание голоса</label>
+  <textarea id="design" placeholder="Например: низкий спокойный мужской голос, говорит медленно и уверенно"></textarea>
+  <div class="meta" style="margin-top:6px">Это <b>весь</b> вход VoiceDesign: голос строится
+    из описания, образец записи не используется. Без описания она отказывается говорить.</div>
+</div>
+
+<div class="card">
   <div class="bar" style="margin-top:0">
     <button class="ghost" onclick="adm('/reload')">Загрузить в память</button>
     <button class="ghost" onclick="adm('/unload')">Выгрузить из памяти</button>
@@ -1533,11 +1575,6 @@ button.danger:hover{border-color:var(--warn)}
     <div><label>top_k</label><input id="top_k" type="number" step="1" value="50"></div>
     <div><label>top_p</label><input id="top_p" type="number" step="0.05" value="1.0"></div>
     <div><label>Штраф за повтор</label><input id="repetition_penalty" type="number" step="0.01" value="1.05"></div>
-  </div>
-  <div class="row" style="margin-top:11px">
-    <div><label>Язык</label><select id="language" onchange="saveVoice()"></select></div>
-    <div id="speakerbox"><label>Встроенный голос</label>
-      <select id="speaker" onchange="saveVoice()"></select></div>
   </div>
   <div class="meta" id="langnote" style="margin-top:8px"></div>
 
@@ -1576,7 +1613,7 @@ button.danger:hover{border-color:var(--warn)}
     игнорируют. Первая загрузка новой модели качает несколько гигабайт и занимает минуты.</div>
 </div>
 
-<div class="card">
+<div class="card" id="refcard">
   <label>Эталон голоса</label>
   <div class="meta" style="margin-bottom:9px">А вот это — настоящее состояние загруженной модели:
     из этого отрезка клонируется голос. Меняется на лету, со следующей же фразы.</div>
@@ -1587,6 +1624,12 @@ button.danger:hover{border-color:var(--warn)}
     <div><label>По паузам</label><select id="ref_snap">
       <option value="1">да</option><option value="0">нет</option></select></div>
   </div>
+  <div style="margin-top:10px"><label style="display:inline">
+    <input type="checkbox" id="xvec" style="width:auto;margin-right:7px">
+    только x-vector — расшифровка отрезка не нужна</label></div>
+  <div class="meta" style="margin-top:5px">Берётся только тембр, без разбора речи.
+    Качество ниже, зато новый эталон можно пробовать сразу, не записывая вручную,
+    что в нём сказано — whisper в это окружение намеренно не ставился.</div>
   <div style="margin-top:10px">
     <label>Расшифровка отрезка</label>
     <textarea id="ref_text" style="min-height:52px"></textarea>
@@ -1689,6 +1732,67 @@ const $=id=>document.getElementById(id)
 // of these, CustomVoice needs a name, VoiceDesign needs a description and
 // nothing else.
 let KIND='clone'
+// Which of the three the person is working in. The model follows the mode
+// rather than the other way round: picking "Готовые голоса" and then having to
+// know that this means a CustomVoice checkpoint is the kind of thing only the
+// person who wrote it remembers.
+let MODE='clone'
+
+const MODE_MODELS = {
+  clone:  {sizes:['0.6B','1.7B'], suffix:'Base',
+           note:'Голос клонируется с образца записи внизу. Это то, чем говорит Джарвис.'},
+  custom: {sizes:['0.6B','1.7B'], suffix:'CustomVoice',
+           note:'Девять встроенных голосов. Образец записи не используется, '
+                +'инструкция управляет манерой.'},
+  design: {sizes:['1.7B'], suffix:'VoiceDesign',
+           note:'Голос строится из описания словами. Ни образец, ни встроенные '
+                +'голоса не участвуют.'},
+}
+
+function modeModelId(){
+  const m = MODE_MODELS[MODE]
+  const size = $('modelsize').value || m.sizes[m.sizes.length-1]
+  return 'Qwen/Qwen3-TTS-12Hz-' + size + '-' + m.suffix
+}
+
+function modeModelNote(){
+  const id = modeModelId()
+  const known = MODELS.find(x => x.id === id)
+  const here = known ? (known.on_disk ? 'на диске' : 'надо скачать') : ''
+  const loaded = (CURRENT_MODEL === id)
+  $('modemodel').textContent = id.split('/').pop() + (here ? ' ' + DOT + ' ' + here : '')
+    + (loaded ? ' ' + DOT + ' загружена' : '')
+  $('modeload').disabled = loaded
+}
+
+function setMode(which){
+  MODE = which
+  for(const name of ['clone','custom','design']){
+    $('mode-'+name).className = (name===which) ? 'tab on' : 'tab'
+  }
+  const m = MODE_MODELS[which]
+  $('modenote').textContent = m.note
+  // Prefer the size already in memory, then whatever was picked before, then
+  // the larger one. Landing on 0.6B by default would quietly answer in a
+  // different voice than the one the assistant actually speaks with.
+  const sel = $('modelsize')
+  const loaded = (CURRENT_MODEL.match(/12Hz-([0-9.]+B)-/) || [])[1]
+  const keep = sel.value
+  sel.innerHTML = m.sizes.map(s => '<option value="'+s+'">'+s+'</option>').join('')
+  for(const want of [loaded, keep, m.sizes[m.sizes.length-1]]){
+    if(want && m.sizes.indexOf(want) >= 0){ sel.value = want; break }
+  }
+  $('speakerbox').style.display = (which==='custom') ? '' : 'none'
+  $('designcard').style.display = (which==='design') ? '' : 'none'
+  $('refcard').style.display = (which==='clone') ? '' : 'none'
+  modeModelNote()
+}
+
+async function modeLoad(){
+  const id = modeModelId()
+  $('model_id').value = id
+  await applyModel()
+}
 
 function applyKind(h){
   KIND = h.kind || 'clone'
@@ -1763,7 +1867,9 @@ async function refresh(){
         '<option value="'+esc(l)+'">'+esc(l)+'</option>').join('')
     }
     if(h.language) $('language').value = h.language
+    CURRENT_MODEL = h.model || ''
     applyKind(h)
+    modeModelNote()
     showLoad(h.loading)
     $('banner').textContent=(h.ok?'':'модель не в памяти \u00b7 ')
       +h.model+' \u00b7 эталон '+h.slice.secs+'s \u00b7 '+(h.sample_rate||'?')+' Гц'
@@ -1808,7 +1914,14 @@ async function adm(path){
   try{ await fetch(path,{method:'POST'}) } finally { refresh() }
 }
 function body(){
-  return {text:$('text').value, mode:$('mode').value, instruct:$('instruct').value,
+  // The instruction field means different things per mode, so each mode sends
+  // what it actually has: a style hint for the built-in voices, the whole
+  // voice description for VoiceDesign, and for cloning the thing that usually
+  // gets read out loud instead of followed.
+  const instruct = (MODE==='design') ? $('design').value : $('instruct').value
+  return {text:$('text').value, mode:$('mode').value, instruct:instruct,
+    speaker:(MODE==='custom' ? $('speaker').value : ''),
+    xvec:(MODE==='clone' && $('xvec').checked),
     temperature:+$('temperature').value, top_k:+$('top_k').value, top_p:+$('top_p').value,
     repetition_penalty:+$('repetition_penalty').value, chunk_size:+$('chunk_size').value,
     max_new_tokens:+$('max_new_tokens').value, nocheck:$('nocheck').checked}
@@ -1859,7 +1972,8 @@ function addItem(text, parts, took, ended){
   el.appendChild(dl)
   $('list').prepend(el)
 }
-let MODELS=[]
+let MODELS=[], CURRENT_MODEL=''
+const DOT='\u00b7'
 async function loadModels(){
   try{
     const d=await (await fetch('/models')).json()
@@ -2230,6 +2344,7 @@ async function gpuKill(i){
   }catch(e){ st.className='meta warn'; st.textContent='не дозвониться до сайдкара' }
   finally{ gpuLoad() }
 }
+setMode('clone')
 refresh(); setInterval(refresh, 5000)
 </script></body></html>
 """
