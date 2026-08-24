@@ -98,6 +98,14 @@ pub struct Settings {
     #[serde(default = "default_llm_speak")]
     pub llm_speak: bool,
 
+    // does the assistant remember the conversation between questions?
+    #[serde(default = "default_llm_history")]
+    pub llm_history: bool,
+    #[serde(default = "default_llm_history_turns")]
+    pub llm_history_turns: u32,
+    #[serde(default = "default_llm_history_idle_min")]
+    pub llm_history_idle_min: u32,
+
     #[serde(default = "default_llm_tts_url")]
     pub llm_tts_url: String,
 
@@ -142,6 +150,9 @@ fn default_llm_thinking() -> String { config::DEFAULT_LLM_THINKING.to_string() }
 fn default_llm_system_prompt() -> String { config::DEFAULT_LLM_SYSTEM_PROMPT.to_string() }
 fn default_llm_allow_remote() -> bool { config::DEFAULT_LLM_ALLOW_REMOTE }
 fn default_llm_speak() -> bool { config::DEFAULT_LLM_SPEAK }
+fn default_llm_history() -> bool { config::DEFAULT_LLM_HISTORY }
+fn default_llm_history_turns() -> u32 { config::DEFAULT_LLM_HISTORY_TURNS }
+fn default_llm_history_idle_min() -> u32 { config::DEFAULT_LLM_HISTORY_IDLE_MIN }
 fn default_llm_tts_url() -> String { config::DEFAULT_LLM_TTS_URL.to_string() }
 fn default_llm_tts_mode() -> String { config::DEFAULT_LLM_TTS_MODE.to_string() }
 fn default_llm_tts_python() -> String { config::DEFAULT_LLM_TTS_PYTHON.to_string() }
@@ -275,6 +286,9 @@ impl Settings {
             "llm_system_prompt"         => Some(self.llm_system_prompt.clone()),
             "llm_allow_remote"          => Some(self.llm_allow_remote.to_string()),
             "llm_speak"                 => Some(self.llm_speak.to_string()),
+            "llm_history"               => Some(self.llm_history.to_string()),
+            "llm_history_turns"         => Some(self.llm_history_turns.to_string()),
+            "llm_history_idle_min"      => Some(self.llm_history_idle_min.to_string()),
             "llm_tts_url"               => Some(self.llm_tts_url.clone()),
             "llm_tts_mode"              => Some(self.llm_tts_mode.clone()),
             "llm_tts_python"            => Some(self.llm_tts_python.clone()),
@@ -432,6 +446,33 @@ impl Settings {
                     _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
                 };
             }
+            "llm_history" => {
+                self.llm_history = match val.to_lowercase().as_str() {
+                    "true"  => true,
+                    "false" => false,
+                    _ => return Err(format!("expected 'true' or 'false', got: '{}'", val)),
+                };
+            }
+            "llm_history_turns" => {
+                let n = val.parse::<u32>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                if !(config::LLM_HISTORY_TURNS_MIN..=config::LLM_HISTORY_TURNS_MAX).contains(&n) {
+                    return Err(format!("history depth must be {}-{}, got: '{}'",
+                                       config::LLM_HISTORY_TURNS_MIN,
+                                       config::LLM_HISTORY_TURNS_MAX, val));
+                }
+                self.llm_history_turns = n;
+            }
+            "llm_history_idle_min" => {
+                let n = val.parse::<u32>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                if !(config::LLM_HISTORY_IDLE_MIN_MIN..=config::LLM_HISTORY_IDLE_MIN_MAX).contains(&n) {
+                    return Err(format!("idle minutes must be {}-{}, got: '{}'",
+                                       config::LLM_HISTORY_IDLE_MIN_MIN,
+                                       config::LLM_HISTORY_IDLE_MIN_MAX, val));
+                }
+                self.llm_history_idle_min = n;
+            }
             "llm_tts_url" => {
                 // The sidecar is a local process by definition - it exists
                 // because the model is too big to ship - so unlike the
@@ -536,6 +577,9 @@ impl Settings {
             "llm_system_prompt",
             "llm_allow_remote",
             "llm_speak",
+            "llm_history",
+            "llm_history_turns",
+            "llm_history_idle_min",
             "llm_tts_url",
             "llm_tts_mode",
             "llm_tts_python",
@@ -628,6 +672,9 @@ impl Default for Settings {
             llm_system_prompt: config::DEFAULT_LLM_SYSTEM_PROMPT.to_string(),
             llm_allow_remote: config::DEFAULT_LLM_ALLOW_REMOTE,
             llm_speak: config::DEFAULT_LLM_SPEAK,
+            llm_history: config::DEFAULT_LLM_HISTORY,
+            llm_history_turns: config::DEFAULT_LLM_HISTORY_TURNS,
+            llm_history_idle_min: config::DEFAULT_LLM_HISTORY_IDLE_MIN,
             llm_tts_url: config::DEFAULT_LLM_TTS_URL.to_string(),
             llm_tts_mode: config::DEFAULT_LLM_TTS_MODE.to_string(),
             llm_tts_python: config::DEFAULT_LLM_TTS_PYTHON.to_string(),

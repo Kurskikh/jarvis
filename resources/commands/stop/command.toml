@@ -1,3 +1,16 @@
+# Ending a turn - and, with it, the conversation.
+#
+# This does two things that used to be one. It stops the assistant listening
+# for a follow-up, as it always did, and it now also forgets what has been said
+# so far, because the reason for saying "стоп" out loud is almost always that
+# the thread has gone somewhere useless. Carrying it into the next question
+# would carry the problem with it.
+#
+# Nothing here can interrupt an answer already being spoken: while the
+# assistant talks, every microphone frame is discarded so it does not
+# transcribe its own voice. Interrupting mid-answer needs hearing through that,
+# which is a separate thing and not yet built.
+
 [[commands]]
 id = "stop_listening"
 type = "stop_chaining"
@@ -12,4 +25,9 @@ phrases.ru = [
     "отдыхай",
     "на этом всё",
     "хватит слушать",
+    "стоп",
+    "забудь",
+    "забудь разговор",
+    "новый разговор",
+    "начни заново",
 ]

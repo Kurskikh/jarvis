@@ -77,6 +77,16 @@ pub struct LlmConfig {
     pub max_tokens: u32,
 }
 
+// One question and the answer it got, as the model will be shown it next time.
+//
+// Owned rather than borrowed: it outlives the turn that produced it by
+// definition, and the whole point is to hand it to a later request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Exchange {
+    pub user: String,
+    pub assistant: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct LlmAnswer {
     pub text: String,
@@ -177,11 +187,15 @@ impl LlmConfig {
 // can both be true for the same error, so "we gave up" must be our own verdict
 // and not a guess about which predicate to check first. dropping the reqwest
 // future on timeout cancels the in-flight request.
-pub async fn ask(cfg: &LlmConfig, prompt: &str) -> Result<LlmAnswer, LlmError> {
+pub async fn ask(
+    cfg: &LlmConfig,
+    prompt: &str,
+    history: &[Exchange],
+) -> Result<LlmAnswer, LlmError> {
     let started = Instant::now();
     let budget = Duration::from_secs(cfg.timeout_secs);
 
-    match tokio::time::timeout(budget, send(cfg, prompt)).await {
+    match tokio::time::timeout(budget, send(cfg, prompt, history)).await {
         Ok(result) => result.map(|mut a| {
             a.elapsed_ms = started.elapsed().as_millis() as u64;
             a
@@ -193,7 +207,11 @@ pub async fn ask(cfg: &LlmConfig, prompt: &str) -> Result<LlmAnswer, LlmError> {
     }
 }
 
-async fn send(cfg: &LlmConfig, prompt: &str) -> Result<LlmAnswer, LlmError> {
+async fn send(
+    cfg: &LlmConfig,
+    prompt: &str,
+    history: &[Exchange],
+) -> Result<LlmAnswer, LlmError> {
     let client = CLIENT.as_ref().map_err(|e| LlmError::Transport {
         endpoint: cfg.base_url.clone(),
         source: format!("http client init failed: {}", e),
@@ -201,14 +219,7 @@ async fn send(cfg: &LlmConfig, prompt: &str) -> Result<LlmAnswer, LlmError> {
 
     let url = format!("{}/chat/completions", cfg.base_url);
 
-    let mut messages = Vec::with_capacity(2);
-    // an empty system prompt means NO system message, not an empty one: a few
-    // chat templates (Gemma family) reject the system role outright and fail
-    // the whole request with a template error
-    if !cfg.system_prompt.trim().is_empty() {
-        messages.push(ChatMessage { role: "system", content: cfg.system_prompt.as_str() });
-    }
-    messages.push(ChatMessage { role: "user", content: prompt });
+    let messages = build_messages(&cfg.system_prompt, history, prompt);
 
     let body = ChatRequest {
         model: cfg.model.as_str(),
@@ -356,6 +367,38 @@ fn strip_reasoning(text: &str) -> &str {
 }
 
 // first 200 CHARS of a body, for an error message.
+// system prompt, then the conversation so far, then the question.
+//
+// An empty system prompt means NO system message, not an empty one: a few chat
+// templates - the Gemma family among them - reject the system role outright
+// and fail the whole request with a template error.
+//
+// A half exchange is dropped rather than sent. An assistant turn with no text
+// teaches the model that answering with nothing is acceptable here, and a user
+// turn with no answer after it reads as a question the assistant ignored.
+// Neither should ever reach this point, which is exactly why it is worth being
+// certain they cannot.
+fn build_messages<'a>(
+    system: &'a str,
+    history: &'a [Exchange],
+    prompt: &'a str,
+) -> Vec<ChatMessage<'a>> {
+    let mut messages = Vec::with_capacity(2 + history.len() * 2);
+
+    if !system.trim().is_empty() {
+        messages.push(ChatMessage { role: "system", content: system });
+    }
+    for turn in history {
+        if turn.user.trim().is_empty() || turn.assistant.trim().is_empty() {
+            continue;
+        }
+        messages.push(ChatMessage { role: "user", content: turn.user.as_str() });
+        messages.push(ChatMessage { role: "assistant", content: turn.assistant.as_str() });
+    }
+    messages.push(ChatMessage { role: "user", content: prompt });
+    messages
+}
+
 // char_indices, not &body[..200]: a byte slice through a Cyrillic answer panics.
 fn head_of(body: &str) -> String {
     let cut = body.char_indices().nth(200).map(|(i, _)| i).unwrap_or(body.len());
@@ -528,6 +571,46 @@ mod tests {
         // what a plain web server answers when the path is wrong: HTML
         let err = parse_models("<!doctype html><title>404</title>", "e").unwrap_err();
         assert_eq!(err.code(), "malformed");
+    }
+
+    fn exchange(u: &str, a: &str) -> Exchange {
+        Exchange { user: u.to_string(), assistant: a.to_string() }
+    }
+
+    #[test]
+    fn a_question_on_its_own_is_one_message() {
+        let m = build_messages("", &[], "который час");
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].role, m[0].content), ("user", "который час"));
+    }
+
+    #[test]
+    fn an_empty_system_prompt_sends_no_system_message() {
+        // not an empty one: the Gemma templates reject the system role and
+        // fail the whole request rather than ignoring it
+        assert_eq!(build_messages("   ", &[], "q").len(), 1);
+        assert_eq!(build_messages("be brief", &[], "q")[0].role, "system");
+    }
+
+    #[test]
+    fn the_conversation_goes_between_the_system_prompt_and_the_question() {
+        let h = vec![exchange("какая погода", "ясно"), exchange("а завтра", "дождь")];
+        let m = build_messages("be brief", &h, "а послезавтра");
+        let shape: Vec<&str> = m.iter().map(|x| x.role).collect();
+        assert_eq!(shape, vec!["system", "user", "assistant", "user", "assistant", "user"]);
+        assert_eq!(m[1].content, "какая погода");
+        assert_eq!(m.last().unwrap().content, "а послезавтра");
+    }
+
+    #[test]
+    fn a_half_exchange_is_dropped() {
+        // an assistant turn with no text teaches the model that answering with
+        // nothing is fine here
+        let h = vec![exchange("q", ""), exchange("", "a"), exchange("real", "answer")];
+        let m = build_messages("", &h, "now");
+        let shape: Vec<&str> = m.iter().map(|x| x.role).collect();
+        assert_eq!(shape, vec!["user", "assistant", "user"]);
+        assert_eq!(m[0].content, "real");
     }
 
     #[test]

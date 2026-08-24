@@ -312,6 +312,28 @@ pub const LLM_SPEECH_STYLE_DIRECTIVE: &str = concat!(
 // The window opens when the assistant STOPS TALKING, not when the command
 // returns: a language model turn answers seconds later and then reads the
 // answer out, and a timer started at the command would be long gone by then.
+// Dialogue memory.
+//
+// Off by default, and deliberately so. Remembering is not free: every exchange
+// travels back to the model inside the next prompt, which costs latency on a
+// local machine, and a thread that starts from a misheard question keeps
+// answering the wrong one until it is cleared.
+pub const DEFAULT_LLM_HISTORY: bool = false;
+
+// How many question-and-answer pairs go with the next question.
+pub const DEFAULT_LLM_HISTORY_TURNS: u32 = 4;
+pub const LLM_HISTORY_TURNS_MIN: u32 = 1;
+pub const LLM_HISTORY_TURNS_MAX: u32 = 20;
+
+// A conversation ends by itself after this long without a word.
+//
+// Voice has no "new chat" button. Without a timeout the assistant would read
+// tomorrow morning's question in the light of tonight's, and the person asking
+// would have no way of knowing that is what happened.
+pub const DEFAULT_LLM_HISTORY_IDLE_MIN: u32 = 5;
+pub const LLM_HISTORY_IDLE_MIN_MIN: u32 = 1;
+pub const LLM_HISTORY_IDLE_MIN_MAX: u32 = 240;
+
 pub const DEFAULT_FOLLOW_UP_SECS: u64 = 8;
 pub const FOLLOW_UP_SECS_MAX: u64 = 120;   // 0 disables it
 

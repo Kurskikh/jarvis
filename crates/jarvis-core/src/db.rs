@@ -85,6 +85,9 @@ pub fn reload_llm_settings() -> Result<bool, String> {
         || live.llm_system_prompt != on_disk.llm_system_prompt
         || live.llm_allow_remote != on_disk.llm_allow_remote
         || live.llm_speak != on_disk.llm_speak
+        || live.llm_history != on_disk.llm_history
+        || live.llm_history_turns != on_disk.llm_history_turns
+        || live.llm_history_idle_min != on_disk.llm_history_idle_min
         || live.llm_tts_url != on_disk.llm_tts_url
         || live.llm_tts_mode != on_disk.llm_tts_mode
         || live.llm_tts_python != on_disk.llm_tts_python
@@ -102,6 +105,9 @@ pub fn reload_llm_settings() -> Result<bool, String> {
     live.llm_system_prompt = on_disk.llm_system_prompt;
     live.llm_allow_remote = on_disk.llm_allow_remote;
     live.llm_speak = on_disk.llm_speak;
+    live.llm_history = on_disk.llm_history;
+    live.llm_history_turns = on_disk.llm_history_turns;
+    live.llm_history_idle_min = on_disk.llm_history_idle_min;
     live.llm_tts_url = on_disk.llm_tts_url;
     live.llm_tts_mode = on_disk.llm_tts_mode;
     live.llm_tts_python = on_disk.llm_tts_python;

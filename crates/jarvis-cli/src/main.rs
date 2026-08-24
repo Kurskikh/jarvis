@@ -76,7 +76,10 @@ async fn ask_llm(text: &str) {
     println!("  → {}  model: {}  timeout: {}s", cfg.base_url, cfg.model, cfg.timeout_secs);
 
     let started = std::time::Instant::now();
-    match llm::ask(&cfg, text).await {
+    // no conversation here on purpose. This harness exists to exercise one
+    // question against one endpoint; carrying a thread would make two
+    // identical invocations produce different answers.
+    match llm::ask(&cfg, text, &[]).await {
         Ok(a) => {
             let usage = match (a.prompt_tokens, a.completion_tokens) {
                 (0, 0) => String::new(),

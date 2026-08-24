@@ -178,6 +178,9 @@
     let llmTtsScript = ""
     let llmTtsInstruct = ""
     let followUpSecs = 8
+    let llmHistory = false
+    let llmHistoryTurns = 4
+    let llmHistoryIdleMin = 5
 
     // mirrors is_loopback_url in crates/jarvis-core/src/db/structs.rs. purely an
     // early warning next to the field - the real gate is Settings::validate_change(),
@@ -308,6 +311,9 @@
                     llm_tts_python: llmTtsPython.trim(),
                     llm_tts_script: llmTtsScript.trim(),
                     llm_tts_instruct: llmTtsInstruct.trim(),
+                    llm_history: llmHistory.toString(),
+                    llm_history_turns: llmHistoryTurns.toString(),
+                    llm_history_idle_min: llmHistoryIdleMin.toString(),
                     follow_up_secs: followUpToSave.toString()
                 }
             })
@@ -420,7 +426,8 @@
                    llmEnabledRaw, llmBaseUrlRaw, llmModelRaw,
                    llmTimeoutRaw, llmMaxTokensRaw, llmThinkingRaw, llmSystemPromptRaw, llmAllowRemoteRaw,
                    llmSpeakRaw, llmTtsUrlRaw, llmTtsModeRaw, llmTtsPythonRaw, llmTtsScriptRaw,
-                   followUpRaw, llmTtsInstructRaw] = await Promise.all([
+                   followUpRaw, llmTtsInstructRaw,
+                   llmHistoryRaw, llmHistoryTurnsRaw, llmHistoryIdleRaw] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
                 invoke<string>("db_read", { key: "selected_wake_word_engine" }),
                 invoke<string>("db_read", { key: "intent_backend" }),
@@ -449,7 +456,10 @@
                 invoke<string>("db_read", { key: "llm_tts_python" }),
                 invoke<string>("db_read", { key: "llm_tts_script" }),
                 invoke<string>("db_read", { key: "follow_up_secs" }),
-                invoke<string>("db_read", { key: "llm_tts_instruct" })
+                invoke<string>("db_read", { key: "llm_tts_instruct" }),
+                invoke<string>("db_read", { key: "llm_history" }),
+                invoke<string>("db_read", { key: "llm_history_turns" }),
+                invoke<string>("db_read", { key: "llm_history_idle_min" })
             ])
 
             selectedMicrophone = mic
@@ -487,6 +497,11 @@
             // silently disable a feature nobody turned off
             followUpSecs = followUpRaw === "" ? 8 : (parseInt(followUpRaw) || 0)
             llmTtsInstruct = llmTtsInstructRaw
+            // remembering defaults OFF, so "" from an older app.db must read
+            // as false - the opposite of the llm_speak case just above
+            llmHistory = llmHistoryRaw === "true"
+            llmHistoryTurns = parseInt(llmHistoryTurnsRaw) || 4
+            llmHistoryIdleMin = parseInt(llmHistoryIdleRaw) || 5
 
             // never hold a value that is not in its option list: NativeSelect
             // shows option[0] while the variable keeps the stale id (it renders
@@ -968,6 +983,36 @@
             rows={2}
             bind:value={llmTtsInstruct}
         />
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-llm-history')}>
+            <Text size="sm" color="gray">{t('settings-llm-history-desc')}</Text>
+            <Space h="xs" />
+            <Switch
+                color="green"
+                label={llmHistory ? t('settings-enabled') : t('settings-disabled')}
+                bind:checked={llmHistory}
+            />
+        </InputWrapper>
+
+        {#if llmHistory}
+            <Space h="md" />
+
+            <InputWrapper label={t('settings-llm-history-turns')}>
+                <Text size="sm" color="gray">{t('settings-llm-history-turns-desc')}</Text>
+                <Space h="xs" />
+                <NumberInput min={1} max={20} step={1} variant="filled" bind:value={llmHistoryTurns} />
+            </InputWrapper>
+
+            <Space h="md" />
+
+            <InputWrapper label={t('settings-llm-history-idle')}>
+                <Text size="sm" color="gray">{t('settings-llm-history-idle-desc')}</Text>
+                <Space h="xs" />
+                <NumberInput min={1} max={240} step={1} variant="filled" bind:value={llmHistoryIdleMin} />
+            </InputWrapper>
+        {/if}
 
         <Space h="md" />
 

@@ -1,5 +1,6 @@
+use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use jarvis_core::{audio, audio_buffer::AudioRingBuffer, audio_processing, commands, config, listener, llm, recorder, speech, stt, intent, voices, ipc::{self, IpcEvent}, i18n, slots, DB};
 use rand::seq::SliceRandom;
@@ -560,6 +561,19 @@ fn execute_command(text: &str, rt: &tokio::runtime::Runtime) -> bool {
         match commands::execute_command(&cmd_path, &cmd_config, Some(&text), extracted_slots.as_ref()) {
             Ok(chain) => {
                 info!("Command executed successfully");
+                // A command that ends the chain ends the conversation with it.
+                // That is what "стоп" or "хватит" means said out loud: not
+                // merely stop listening, but drop the thread - the reason for
+                // saying it is usually that the thread has gone somewhere
+                // useless, and carrying it into the next question would carry
+                // the problem with it.
+                //
+                // Nothing is said or stopped here: every recognition already
+                // ran supersede_llm_turn, so an answer in flight is cancelled
+                // and its speech silenced before this point.
+                if !chain {
+                    forget_conversation();
+                }
                 // voices::play_ok();
                 voices::play_random_from(cmd_config.get_sounds(&i18n::get_language()).as_slice());
                 ipc::send(IpcEvent::CommandExecuted {
@@ -654,6 +668,84 @@ fn execute_command(text: &str, rt: &tokio::runtime::Runtime) -> bool {
 // confidence, not length. The test at the bottom of this file keeps the
 // constant honest against the packs.
 const MIN_COMMAND_CHARS: usize = 3;
+
+// What the assistant remembers of the conversation.
+//
+// A chat window has a "new conversation" button. A voice has nothing of the
+// kind, so a thread that is never ended is a thread that lasts until the
+// process does - and tomorrow morning's question would be read in the light of
+// tonight's, with no way for the person asking to tell that is what happened.
+//
+// So it ends two ways. The stop word clears it outright, and it lapses on its
+// own after a stretch of silence. Both are needed: the first is for a thread
+// that has gone wrong, the second for one simply left behind.
+struct Conversation {
+    turns: VecDeque<llm::Exchange>,
+    last: Option<Instant>,
+}
+
+impl Conversation {
+    const fn new() -> Self {
+        Conversation { turns: VecDeque::new(), last: None }
+    }
+
+    // What travels with the next question. Takes `now` rather than reading the
+    // clock so the lapse can be tested without waiting for it.
+    fn recall(&mut self, now: Instant, idle: Duration) -> Vec<llm::Exchange> {
+        if let Some(last) = self.last {
+            if now.duration_since(last) >= idle {
+                debug!("The conversation lapsed after {:?} of silence", now.duration_since(last));
+                self.clear();
+                return Vec::new();
+            }
+        }
+        self.turns.iter().cloned().collect()
+    }
+
+    // Only a complete exchange is worth keeping. A question with no answer
+    // reads to the model as one the assistant ignored, and an answer with no
+    // text teaches it that saying nothing is acceptable here.
+    fn record(&mut self, now: Instant, user: String, assistant: String, depth: usize) {
+        if user.trim().is_empty() || assistant.trim().is_empty() || depth == 0 {
+            return;
+        }
+        self.turns.push_back(llm::Exchange { user, assistant });
+        while self.turns.len() > depth {
+            self.turns.pop_front();
+        }
+        self.last = Some(now);
+    }
+
+    fn clear(&mut self) {
+        self.turns.clear();
+        self.last = None;
+    }
+}
+
+static CONVERSATION: once_cell::sync::Lazy<parking_lot::Mutex<Conversation>> =
+    once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(Conversation::new()));
+
+// Depth and lapse, or None when remembering is switched off.
+fn conversation_settings() -> Option<(usize, Duration)> {
+    let db = DB.get()?;
+    let s = db.read();
+    if !s.llm_history {
+        return None;
+    }
+    Some((
+        s.llm_history_turns as usize,
+        Duration::from_secs(s.llm_history_idle_min as u64 * 60),
+    ))
+}
+
+// Forget the thread. Said out loud, or asked for from the window.
+pub fn forget_conversation() {
+    let mut c = CONVERSATION.lock();
+    if !c.turns.is_empty() {
+        debug!("Forgetting {} remembered exchange(s)", c.turns.len());
+    }
+    c.clear();
+}
 
 static LLM_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -758,8 +850,21 @@ fn spawn_llm_turn(rt: &tokio::runtime::Runtime, cfg: llm::LlmConfig, prompt: Str
             prompt: prompt.clone(),
         });
 
+        // read once, before the call: the settings can change while a slow
+        // answer is in flight, and a turn should finish under the rules it
+        // started under
+        let memory = conversation_settings();
+        let history = match memory {
+            Some((_, idle)) => CONVERSATION.lock().recall(Instant::now(), idle),
+            None => Vec::new(),
+        };
+        if !history.is_empty() {
+            debug!("Carrying {} remembered exchange(s) into this question", history.len());
+        }
+        let asked = prompt.clone();
+
         let started = std::time::Instant::now();
-        let result = llm::ask(&cfg, &prompt).await;
+        let result = llm::ask(&cfg, &prompt, &history).await;
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
         // a newer utterance started while this was in flight. its answer is the
@@ -774,6 +879,9 @@ fn spawn_llm_turn(rt: &tokio::runtime::Runtime, cfg: llm::LlmConfig, prompt: Str
                 // the synthesiser's tags are for the synthesiser. The window
                 // and the log get prose; the sidecar gets a.text as written.
                 let shown = speech::strip_markup(&a.text);
+                // what the model is told it said is the prose that was
+                // actually spoken, not the marked-up form
+                let remembered = shown.clone();
 
                 // the text goes in the log too, {:?} so a multi-line answer
                 // stays one line. with no GUI attached (see the has_clients
@@ -789,6 +897,13 @@ fn spawn_llm_turn(rt: &tokio::runtime::Runtime, cfg: llm::LlmConfig, prompt: Str
                     error_code: None,
                     error: None,
                 });
+
+                // Remembered only once it is a real answer. A failed turn
+                // and a superseded one leave nothing behind - the alternative
+                // is a model reasoning from words it never said.
+                if let Some((depth, _)) = memory {
+                    CONVERSATION.lock().record(Instant::now(), asked, remembered, depth);
+                }
 
                 // the answer has already reached the window and the log; the
                 // voice is on top of that, never instead of it
@@ -1003,5 +1118,91 @@ mod wake_echo_tests {
     #[test]
     fn case_and_surrounding_space_do_not_matter() {
         assert_eq!(read_segment("  ДЖАРВИС  ", RU, true), Segment::WakeEcho);
+    }
+}
+
+#[cfg(test)]
+mod conversation_tests {
+    use super::Conversation;
+    use std::time::{Duration, Instant};
+
+    fn ex(c: &Conversation, i: usize) -> (String, String) {
+        (c.turns[i].user.clone(), c.turns[i].assistant.clone())
+    }
+
+    #[test]
+    fn a_complete_exchange_is_kept() {
+        let mut c = Conversation::new();
+        c.record(Instant::now(), "какая погода".into(), "ясно".into(), 4);
+        assert_eq!(c.turns.len(), 1);
+        assert_eq!(ex(&c, 0), ("какая погода".to_string(), "ясно".to_string()));
+    }
+
+    #[test]
+    fn a_half_exchange_is_not() {
+        let mut c = Conversation::new();
+        let now = Instant::now();
+        c.record(now, "q".into(), "".into(), 4);
+        c.record(now, "".into(), "a".into(), 4);
+        c.record(now, "  ".into(), "  ".into(), 4);
+        assert!(c.turns.is_empty());
+        // and nothing was stamped, so an empty thread cannot "lapse"
+        assert!(c.last.is_none());
+    }
+
+    #[test]
+    fn only_the_last_few_are_carried() {
+        let mut c = Conversation::new();
+        let now = Instant::now();
+        for i in 0..10 {
+            c.record(now, format!("q{}", i), format!("a{}", i), 3);
+        }
+        assert_eq!(c.turns.len(), 3);
+        // the oldest go, not the newest
+        assert_eq!(ex(&c, 0).0, "q7");
+        assert_eq!(ex(&c, 2).0, "q9");
+    }
+
+    #[test]
+    fn the_thread_lapses_after_silence() {
+        let mut c = Conversation::new();
+        let start = Instant::now();
+        c.record(start, "q".into(), "a".into(), 4);
+
+        let idle = Duration::from_secs(300);
+        assert_eq!(c.recall(start + Duration::from_secs(299), idle).len(), 1);
+        assert!(c.recall(start + Duration::from_secs(300), idle).is_empty());
+        // and it is gone, not merely withheld: the next question starts clean
+        assert!(c.turns.is_empty());
+    }
+
+    #[test]
+    fn each_answer_pushes_the_lapse_back() {
+        // otherwise a long conversation would expire mid-sentence, counting
+        // from whenever it happened to start
+        let mut c = Conversation::new();
+        let idle = Duration::from_secs(300);
+        let start = Instant::now();
+        c.record(start, "q1".into(), "a1".into(), 4);
+        c.record(start + Duration::from_secs(200), "q2".into(), "a2".into(), 4);
+        assert_eq!(c.recall(start + Duration::from_secs(400), idle).len(), 2);
+    }
+
+    #[test]
+    fn the_stop_word_leaves_nothing_behind() {
+        let mut c = Conversation::new();
+        c.record(Instant::now(), "q".into(), "a".into(), 4);
+        c.clear();
+        assert!(c.turns.is_empty());
+        assert!(c.last.is_none());
+        // an empty thread must not lapse into anything odd
+        assert!(c.recall(Instant::now(), Duration::from_secs(1)).is_empty());
+    }
+
+    #[test]
+    fn a_depth_of_zero_remembers_nothing() {
+        let mut c = Conversation::new();
+        c.record(Instant::now(), "q".into(), "a".into(), 0);
+        assert!(c.turns.is_empty());
     }
 }
