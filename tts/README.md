@@ -114,6 +114,32 @@ card's own total is read separately, from the driver.
 there, whatever they are holding, and neither can the sidecar itself - to free
 what IT holds, unload the model.
 
+## The three tabs
+
+Each owns one question, and nothing appears in two of them.
+
+**Синтез** — making a sound. It opens on a mode, and the model follows the
+mode rather than the other way round:
+
+| mode | what it shows | model |
+|---|---|---|
+| Клонирование | the reference recording, and x-vector-only | `-Base`, 0.6B or 1.7B |
+| Готовые голоса | the nine built-in names, and a style instruction | `-CustomVoice`, 0.6B or 1.7B |
+| Голос по описанию | a description box, which is the whole input | `-VoiceDesign`, 1.7B |
+
+Nothing that does not apply is shown. The instruction field appears only for
+the built-in voices, because only they follow it - the cloning models read it
+out loud instead, and a field that does the opposite of its label is worse than
+no field at all. Beside the size it says whether that checkpoint is on disk or
+has to be fetched, and the bar underneath reports the fetch.
+
+**Голоса** — which voice, and what it says. Every pack on disk, switching
+between them, starting a new one, and the clips of the chosen one.
+
+**Видеопамять** — what is holding the card, including our own model: loading it
+and handing its memory back live here rather than next to the synthesis
+controls, because that is a question about the card, not about a sentence.
+
 ## The clips Jarvis plays by itself
 
 Twenty-three of them, in `resources/sound/voices/jarvis-og-tts/ru/`: "да, сэр"
@@ -153,7 +179,7 @@ from the text, which helps when an answer has English words in it.
 
 | route | what it does |
 |---|---|
-| `/` | the console, in three tabs: **Синтез** to try a line, change sampling, switch model, voice or reference; **Заготовки** to see and re-record the clips Jarvis plays without asking the model; **Видеопамять** to see what is holding the card |
+| `/` | the console, in three tabs — see below |
 | `/speak` | synthesise. Length-prefixed frames, streamed |
 | `/health` | up, which model, sample rate, which reference |
 | `/models` | what can be loaded, and what each one is good for |

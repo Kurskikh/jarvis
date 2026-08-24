@@ -1539,6 +1539,41 @@ button.danger:hover{border-color:var(--warn)}
     <button class="ghost" id="modeload" onclick="modeLoad()">Загрузить эту модель</button>
     <span id="modemodel" class="meta"></span>
   </div>
+  <div class="progress" id="loadbar"><i></i></div>
+  <div class="meta" id="loadnote" style="margin-top:7px"></div>
+  <div class="meta" id="model_note" style="margin-top:5px"></div>
+</div>
+
+<div class="card" id="refcard">
+  <label>Эталон голоса</label>
+  <div class="meta" style="margin-bottom:9px">А вот это — настоящее состояние загруженной модели:
+    из этого отрезка клонируется голос. Меняется на лету, со следующей же фразы.</div>
+  <input id="ref_path" placeholder="путь к wav">
+  <div class="row" style="margin-top:10px">
+    <div><label>Начало, с</label><input id="ref_start" type="number" step="0.5" value="5"></div>
+    <div><label>Длина, с</label><input id="ref_length" type="number" step="1" value="8"></div>
+    <div><label>По паузам</label><select id="ref_snap">
+      <option value="1">да</option><option value="0">нет</option></select></div>
+  </div>
+  <div style="margin-top:10px"><label style="display:inline">
+    <input type="checkbox" id="xvec" style="width:auto;margin-right:7px">
+    только x-vector — расшифровка отрезка не нужна</label></div>
+  <div class="meta" style="margin-top:5px">Берётся только тембр, без разбора речи.
+    Качество ниже, зато новый эталон можно пробовать сразу, не записывая вручную,
+    что в нём сказано — whisper в это окружение намеренно не ставился.</div>
+  <div style="margin-top:10px">
+    <label>Расшифровка отрезка</label>
+    <textarea id="ref_text" style="min-height:52px"></textarea>
+    <div class="meta" style="margin-top:5px">Должна совпадать с отрезком слово в слово: модель
+      продолжает эту речь твоим текстом. Для нового отрезка её надо вписать — whisper в это
+      окружение намеренно не ставился.</div>
+  </div>
+  <div class="bar">
+    <button class="ghost" onclick="applyRef()">Применить эталон</button>
+    <button class="ghost" onclick="hearRef()">Послушать отрезок</button>
+    <span id="refmeta" class="meta"></span>
+  </div>
+  <div style="margin-top:9px"><audio id="refaudio" controls style="width:100%"></audio></div>
 </div>
 
 <div class="card" id="designcard" style="display:none">
@@ -1548,20 +1583,11 @@ button.danger:hover{border-color:var(--warn)}
     из описания, образец записи не используется. Без описания она отказывается говорить.</div>
 </div>
 
-<div class="card">
-  <div class="bar" style="margin-top:0">
-    <button class="ghost" onclick="adm('/reload')">Загрузить в память</button>
-    <button class="ghost" onclick="adm('/unload')">Выгрузить из памяти</button>
-    <span id="vram" class="meta"></span>
-  </div>
-  <div class="progress" id="loadbar"><i></i></div>
-  <div class="meta" id="loadnote" style="margin-top:7px"></div>
-</div>
 
 <div class="card">
   <label>Текст</label>
   <textarea id="text">Система работает штатно, сэр. Все процессы в пределах нормы.</textarea>
-  <div style="margin-top:11px">
+  <div style="margin-top:11px" id="instructbox">
     <label>Инструкция — как говорить</label>
     <input id="instruct" placeholder="пусто = обычное клонирование по образцу">
     <div class="meta warn" id="instructnote" style="margin-top:5px">Модель часто зачитывает инструкцию вслух вместо того,
@@ -1600,50 +1626,9 @@ button.danger:hover{border-color:var(--warn)}
   </div>
 </div>
 
-<div class="card">
-  <label>Модель синтеза</label>
-  <div class="row" style="margin-top:2px">
-    <div style="flex:3"><select id="model_id"></select></div>
-    <div style="flex:1;min-width:150px"><button class="ghost" style="width:100%"
-      onclick="applyModel()">Загрузить модель</button></div>
-  </div>
-  <div class="meta" id="model_note" style="margin-top:6px"></div>
-  <div class="meta warn" style="margin-top:5px">Голос по образцу клонируют только варианты
-    <code>-Base</code>. CustomVoice и VoiceDesign говорят своими голосами и твой эталон
-    игнорируют. Первая загрузка новой модели качает несколько гигабайт и занимает минуты.</div>
-</div>
+<select id="model_id" style="display:none"></select>
 
-<div class="card" id="refcard">
-  <label>Эталон голоса</label>
-  <div class="meta" style="margin-bottom:9px">А вот это — настоящее состояние загруженной модели:
-    из этого отрезка клонируется голос. Меняется на лету, со следующей же фразы.</div>
-  <input id="ref_path" placeholder="путь к wav">
-  <div class="row" style="margin-top:10px">
-    <div><label>Начало, с</label><input id="ref_start" type="number" step="0.5" value="5"></div>
-    <div><label>Длина, с</label><input id="ref_length" type="number" step="1" value="8"></div>
-    <div><label>По паузам</label><select id="ref_snap">
-      <option value="1">да</option><option value="0">нет</option></select></div>
-  </div>
-  <div style="margin-top:10px"><label style="display:inline">
-    <input type="checkbox" id="xvec" style="width:auto;margin-right:7px">
-    только x-vector — расшифровка отрезка не нужна</label></div>
-  <div class="meta" style="margin-top:5px">Берётся только тембр, без разбора речи.
-    Качество ниже, зато новый эталон можно пробовать сразу, не записывая вручную,
-    что в нём сказано — whisper в это окружение намеренно не ставился.</div>
-  <div style="margin-top:10px">
-    <label>Расшифровка отрезка</label>
-    <textarea id="ref_text" style="min-height:52px"></textarea>
-    <div class="meta" style="margin-top:5px">Должна совпадать с отрезком слово в слово: модель
-      продолжает эту речь твоим текстом. Для нового отрезка её надо вписать — whisper в это
-      окружение намеренно не ставился.</div>
-  </div>
-  <div class="bar">
-    <button class="ghost" onclick="applyRef()">Применить эталон</button>
-    <button class="ghost" onclick="hearRef()">Послушать отрезок</button>
-    <span id="refmeta" class="meta"></span>
-  </div>
-  <div style="margin-top:9px"><audio id="refaudio" controls style="width:100%"></audio></div>
-</div>
+
 
 <div class="card"><div id="list"></div></div>
 </div><!-- /pane-tts -->
@@ -1698,6 +1683,17 @@ button.danger:hover{border-color:var(--warn)}
 </div><!-- /pane-pack -->
 
 <div id="pane-gpu" style="display:none">
+  <div class="card">
+    <div class="bar" style="margin-top:0">
+      <button class="ghost" onclick="adm('/reload')">Загрузить модель в память</button>
+      <button class="ghost" onclick="adm('/unload')">Выгрузить из памяти</button>
+      <span id="vram" class="meta"></span>
+    </div>
+    <div class="meta" style="margin-top:9px">Наша собственная модель — обычно самое
+      крупное, что занимает карту. Выгрузка отдаёт её память, не останавливая сайдкар:
+      следующий запрос на синтез загрузит модель заново.</div>
+  </div>
+
   <div class="card">
     <div class="bar" style="margin-top:0">
       <button class="ghost" onclick="gpuLoad()">Обновить</button>
@@ -1785,6 +1781,11 @@ function setMode(which){
   $('speakerbox').style.display = (which==='custom') ? '' : 'none'
   $('designcard').style.display = (which==='design') ? '' : 'none'
   $('refcard').style.display = (which==='clone') ? '' : 'none'
+  // Only the built-in voices actually follow an instruction. The cloning
+  // models read it out loud instead - measured on Russian, English and
+  // Chinese - and VoiceDesign has its own box above, which is not the same
+  // thing. A field that does the opposite of its label is worse than no field.
+  $('instructbox').style.display = (which==='custom') ? '' : 'none'
   modeModelNote()
 }
 
@@ -1819,19 +1820,9 @@ function applyKind(h){
       + '</option>'
   }
   const note = $('instructnote')
-  if(KIND==='design'){
-    note.className = 'meta'
-    note.textContent = 'VoiceDesign строит голос по этому описанию — без него ему нечего делать. '
-      + 'Образец записи не используется.'
-  }else if(KIND==='custom'){
-    note.className = 'meta'
-    note.textContent = 'Голос берётся из списка слева, образец записи не используется. '
-      + 'Инструкция здесь управляет манерой.'
-  }else{
-    note.className = 'meta warn'
-    note.textContent = 'Модель часто зачитывает инструкцию вслух вместо того, чтобы ей следовать. '
-      + 'Проверено на русском, английском и китайском: надёжно работает только пустое поле.'
-  }
+  note.className = 'meta'
+  note.textContent = 'Управляет манерой встроенного голоса: «говори бодро», «медленно и веско».'
+    + ' Клонирующие модели её не выполняют, а зачитывают вслух, поэтому там этого поля нет.'
   const lang = ($('language').value === 'Auto')
     ? 'Язык определяется по тексту — полезно, когда в ответе попадаются английские слова. '
     : 'Текст читается как выбранный язык, что бы в нём ни было написано. '
