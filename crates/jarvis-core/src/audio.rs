@@ -88,6 +88,34 @@ pub fn init() -> Result<(), ()> {
     Ok(())
 }
 
+// How much louder or quieter than recorded the assistant should be, in
+// decibels.
+//
+// Decibels and not the percentage the setting is written in, because loudness
+// is what the ear hears and a linear percentage is not it: halving the number
+// does not halve the loudness. Kira takes decibels for the same reason.
+//
+// Read at every clip rather than cached, so moving the slider is heard on the
+// next thing said instead of the next start.
+fn voice_gain_db() -> f32 {
+    match DB.get() {
+        Some(db) => gain_db(db.read().voice_volume),
+        // before the settings exist there is nothing to apply, and silence
+        // would be the wrong guess
+        None => 0.0,
+    }
+}
+
+// The percentage the setting is written in, as the decibels Kira wants.
+//
+// Clamped here as well as when the value is stored: a hand-edited app.db is a
+// supported way to break things, and a number outside the range would be a
+// gain nobody chose - at the loud end, one that only distorts.
+fn gain_db(percent: u32) -> f32 {
+    let percent = percent.clamp(config::VOICE_VOLUME_MIN, config::VOICE_VOLUME_MAX) as f32;
+    20.0 * (percent / 100.0).log10()
+}
+
 pub fn play_sound(filename: &PathBuf) {
     let audio_type = match AUDIO_TYPE.get() {
         Some(t) => t,
@@ -104,7 +132,7 @@ pub fn play_sound(filename: &PathBuf) {
             rodio::play_sound(filename, true);
         }
         AudioType::Kira => {
-            if let Some(duration) = kira::play_sound(filename) {
+            if let Some(duration) = kira::play_sound(filename, voice_gain_db()) {
                 mark_speaking(duration);
             }
         }
@@ -124,7 +152,7 @@ pub fn play_speech(wav: Vec<u8>) -> bool {
     };
 
     match audio_type {
-        AudioType::Kira => match kira::play_sequenced(wav) {
+        AudioType::Kira => match kira::play_sequenced(wav, voice_gain_db()) {
             Some(remaining) => {
                 // the gate has to cover everything queued, not just this
                 // piece, or the microphone opens between sentences and the
@@ -166,5 +194,39 @@ pub fn get_sound_directory() -> Option<PathBuf> {
             error!("No sounds folder found. Search path - {:?}", voice_path);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn as_recorded_is_no_change_at_all() {
+        // 100 has to be exactly zero and not nearly zero: it is the default,
+        // so every installation that never touches this setting goes through
+        // it, and a stray fraction of a decibel on every clip is the kind of
+        // thing nobody thinks to look for
+        assert_eq!(gain_db(100), 0.0);
+    }
+
+    #[test]
+    fn doubling_the_number_is_six_decibels() {
+        assert!((gain_db(200) - 6.0206).abs() < 0.001);
+        assert!((gain_db(50) + 6.0206).abs() < 0.001);
+    }
+
+    #[test]
+    fn louder_is_a_larger_number() {
+        // the direction is the whole of what a user gets wrong, and getting it
+        // backwards here would be inaudible in review and obvious in use
+        assert!(gain_db(150) > gain_db(100));
+        assert!(gain_db(100) > gain_db(75));
+    }
+
+    #[test]
+    fn a_value_from_outside_the_range_cannot_ask_for_more_than_the_ceiling() {
+        assert_eq!(gain_db(10_000), gain_db(config::VOICE_VOLUME_MAX));
+        assert_eq!(gain_db(0), gain_db(config::VOICE_VOLUME_MIN));
     }
 }

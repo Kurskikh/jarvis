@@ -114,6 +114,9 @@ pub struct Settings {
     // what is LEFT, as a percentage of the volume the application had
     #[serde(default = "default_duck_level")]
     pub duck_level: u32,
+    // how loud the assistant himself is, as a percentage of the recordings
+    #[serde(default = "default_voice_volume")]
+    pub voice_volume: u32,
 
     // does the assistant remember the conversation between questions?
     #[serde(default = "default_llm_history")]
@@ -176,6 +179,7 @@ fn default_vad_energy_threshold() -> u32 { config::DEFAULT_VAD_ENERGY_THRESHOLD 
 fn default_speech_pause_ms() -> u32 { config::DEFAULT_SPEECH_PAUSE_MS }
 fn default_duck_others() -> bool { config::DEFAULT_DUCK_OTHERS }
 fn default_duck_level() -> u32 { config::DEFAULT_DUCK_LEVEL }
+fn default_voice_volume() -> u32 { config::DEFAULT_VOICE_VOLUME }
 fn default_llm_history() -> bool { config::DEFAULT_LLM_HISTORY }
 fn default_llm_history_turns() -> u32 { config::DEFAULT_LLM_HISTORY_TURNS }
 fn default_llm_history_idle_min() -> u32 { config::DEFAULT_LLM_HISTORY_IDLE_MIN }
@@ -324,6 +328,7 @@ impl Settings {
             "speech_pause_ms"           => Some(self.speech_pause_ms.to_string()),
             "duck_others"               => Some(self.duck_others.to_string()),
             "duck_level"                => Some(self.duck_level.to_string()),
+            "voice_volume"              => Some(self.voice_volume.to_string()),
             "llm_history"               => Some(self.llm_history.to_string()),
             "llm_history_turns"         => Some(self.llm_history_turns.to_string()),
             "llm_history_idle_min"      => Some(self.llm_history_idle_min.to_string()),
@@ -545,6 +550,15 @@ impl Settings {
                 }
                 self.duck_level = n;
             }
+            "voice_volume" => {
+                let n = val.parse::<u32>()
+                    .map_err(|_| format!("invalid integer: '{}'", val))?;
+                if !(config::VOICE_VOLUME_MIN..=config::VOICE_VOLUME_MAX).contains(&n) {
+                    return Err(format!("voice volume must be {}-{}, got: '{}'",
+                                       config::VOICE_VOLUME_MIN, config::VOICE_VOLUME_MAX, val));
+                }
+                self.voice_volume = n;
+            }
             "llm_history" => {
                 self.llm_history = match val.to_lowercase().as_str() {
                     "true"  => true,
@@ -690,6 +704,7 @@ impl Settings {
             "llm_speak",
             "duck_others",
             "duck_level",
+            "voice_volume",
             "llm_history",
             "llm_history_turns",
             "llm_history_idle_min",
@@ -791,6 +806,7 @@ impl Default for Settings {
             speech_pause_ms: config::DEFAULT_SPEECH_PAUSE_MS,
             duck_others: config::DEFAULT_DUCK_OTHERS,
             duck_level: config::DEFAULT_DUCK_LEVEL,
+            voice_volume: config::DEFAULT_VOICE_VOLUME,
             llm_history: config::DEFAULT_LLM_HISTORY,
             llm_history_turns: config::DEFAULT_LLM_HISTORY_TURNS,
             llm_history_idle_min: config::DEFAULT_LLM_HISTORY_IDLE_MIN,

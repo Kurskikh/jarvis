@@ -8,7 +8,7 @@ use std::sync::Mutex;
 // };
 
 use kira::{
-    AudioManager, AudioManagerSettings, DefaultBackend, StartTime, Tween,
+    AudioManager, AudioManagerSettings, DefaultBackend, Decibels, StartTime, Tween,
     clock::{ClockHandle, ClockSpeed, ClockTime},
     sound::{PlaybackState, static_sound::{StaticSoundData, StaticSoundHandle}},
 };
@@ -95,11 +95,12 @@ pub fn init() -> Result<(), ()> {
 // @TODO. Cache sounds in memory? With a pool of a certain size, for instance.
 // returns how long the clip will play, so the caller can stop listening for
 // that long - the microphone hears the speakers
-pub fn play_sound(filename: &PathBuf) -> Option<std::time::Duration> {
+pub fn play_sound(filename: &PathBuf, gain_db: f32) -> Option<std::time::Duration> {
     // load the file
     match StaticSoundData::from_file(filename) {
         Ok(sound_data) => {
             let duration = sound_data.duration();
+            let sound_data = sound_data.volume(Decibels(gain_db));
 
             // play it (non-blocking)
             if let Some(manager) = MANAGER.get() {
@@ -130,7 +131,7 @@ pub fn play_sound(filename: &PathBuf) -> Option<std::time::Duration> {
 // Returns how long from now until everything queued has finished playing, so
 // the caller can hold the microphone gate open for the whole answer and not
 // just this piece.
-pub fn play_sequenced(wav: Vec<u8>) -> Option<std::time::Duration> {
+pub fn play_sequenced(wav: Vec<u8>, gain_db: f32) -> Option<std::time::Duration> {
     let manager = MANAGER.get()?;
     let mut manager = manager.lock().ok()?;
 
@@ -202,7 +203,7 @@ pub fn play_sequenced(wav: Vec<u8>) -> Option<std::time::Duration> {
     };
 
     let at = ClockTime { clock: seq.clock.id(), ticks: start, fraction: 0.0 };
-    match manager.play(data.start_time(StartTime::ClockTime(at))) {
+    match manager.play(data.volume(Decibels(gain_db)).start_time(StartTime::ClockTime(at))) {
         Ok(handle) => {
             seq.playing.push(handle);
             seq.next_tick = start + millis;

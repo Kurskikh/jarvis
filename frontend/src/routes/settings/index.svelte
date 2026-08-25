@@ -189,6 +189,7 @@
     let llmHistoryTurns = 4
     let llmHistoryIdleMin = 5
     let duckLevel = 20
+    let voiceVolume = 100
 
     // mirrors is_loopback_url in crates/jarvis-core/src/db/structs.rs. purely an
     // early warning next to the field - the real gate is Settings::validate_change(),
@@ -331,6 +332,7 @@
                     llm_history_idle_min: llmHistoryIdleMin.toString(),
                     duck_others: duckOthers.toString(),
                     duck_level: duckLevel.toString(),
+                    voice_volume: voiceVolume.toString(),
                     follow_up_secs: followUpToSave.toString(),
                     dialogue_exit_secs: dialogueExitToSave.toString()
                 }
@@ -449,7 +451,7 @@
                    llmSpeakRaw, llmTtsUrlRaw, llmTtsModeRaw, llmTtsPythonRaw, llmTtsScriptRaw,
                    followUpRaw, dialogueExitRaw, llmTtsInstructRaw,
                    llmHistoryRaw, llmHistoryTurnsRaw, llmHistoryIdleRaw,
-                   duckOthersRaw, duckLevelRaw,
+                   duckOthersRaw, duckLevelRaw, voiceVolumeRaw,
                    sttEngineRaw, vadThresholdRaw, speechPauseRaw,
                    wakeMinScoreRaw] = await Promise.all([
                 invoke<string>("db_read", { key: "selected_microphone" }),
@@ -487,6 +489,7 @@
                 invoke<string>("db_read", { key: "llm_history_idle_min" }),
                 invoke<string>("db_read", { key: "duck_others" }),
                 invoke<string>("db_read", { key: "duck_level" }),
+                invoke<string>("db_read", { key: "voice_volume" }),
                 invoke<string>("db_read", { key: "speech_to_text_engine" }),
                 invoke<string>("db_read", { key: "vad_energy_threshold" }),
                 invoke<string>("db_read", { key: "speech_pause_ms" }),
@@ -544,6 +547,7 @@
             // 0 is a legitimate level (full silence), so "" must not fall
             // through to it by way of ||
             duckLevel = duckLevelRaw === "" ? 20 : (parseInt(duckLevelRaw) || 0)
+            voiceVolume = voiceVolumeRaw === "" ? 100 : (parseInt(voiceVolumeRaw) || 100)
 
             // never hold a value that is not in its option list: NativeSelect
             // shows option[0] while the variable keeps the stale id (it renders
@@ -685,6 +689,14 @@
                 <NumberInput min={0} max={90} step={5} variant="filled" bind:value={duckLevel} />
             </InputWrapper>
         {/if}
+
+        <Space h="md" />
+
+        <InputWrapper label={t('settings-voice-volume')}>
+            <Text size="sm" color="gray">{t('settings-voice-volume-desc')}</Text>
+            <Space h="xs" />
+            <NumberInput min={50} max={200} step={10} variant="filled" bind:value={voiceVolume} />
+        </InputWrapper>
     </Tabs.Tab>
 
     <Tabs.Tab label={t('settings-devices')} icon={Mix}>

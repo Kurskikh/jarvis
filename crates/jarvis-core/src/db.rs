@@ -92,6 +92,7 @@ pub fn reload_live_settings() -> Result<bool, String> {
         || live.speech_pause_ms != on_disk.speech_pause_ms
         || live.duck_others != on_disk.duck_others
         || live.duck_level != on_disk.duck_level
+        || live.voice_volume != on_disk.voice_volume
         || live.llm_history != on_disk.llm_history
         || live.llm_history_turns != on_disk.llm_history_turns
         || live.llm_history_idle_min != on_disk.llm_history_idle_min
@@ -125,6 +126,7 @@ pub fn reload_live_settings() -> Result<bool, String> {
     live.speech_pause_ms = on_disk.speech_pause_ms;
     live.duck_others = on_disk.duck_others;
     live.duck_level = on_disk.duck_level;
+    live.voice_volume = on_disk.voice_volume;
     live.llm_history = on_disk.llm_history;
     live.llm_history_turns = on_disk.llm_history_turns;
     live.llm_history_idle_min = on_disk.llm_history_idle_min;

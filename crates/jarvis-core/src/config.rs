@@ -418,6 +418,22 @@ pub const DUCK_LEVEL_MIN: u32 = 0;
 // switch above is for
 pub const DUCK_LEVEL_MAX: u32 = 90;
 
+// How loud the assistant himself is, as a percentage of the recordings.
+//
+// The other half of being heard over music, and the smaller half. The shipped
+// voice sits around -22 dBFS RMS while a modern master sits around -10, so the
+// assistant starts about twelve decibels behind and the ducking is what closes
+// most of that gap. This closes the rest.
+//
+// The ceiling is 200 and not higher because it cannot be: the loudest phrases
+// peak within about three decibels of full scale, so past that the gain has
+// nowhere left to go and buys volume in exchange for distortion. The floor is
+// 50 rather than 0 - an assistant that cannot be heard at all is a fault
+// report waiting to happen, and there is a switch for silence elsewhere.
+pub const DEFAULT_VOICE_VOLUME: u32 = 100;
+pub const VOICE_VOLUME_MIN: u32 = 50;
+pub const VOICE_VOLUME_MAX: u32 = 200;
+
 // Dialogue memory.
 //
 // Off by default, and deliberately so. Remembering is not free: every exchange
