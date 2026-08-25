@@ -541,6 +541,19 @@ fn recognize_command(
     // it is the one that may be the wake word's own audio
     let mut first_recognition = true;
 
+    // When the microphone stopped hearing, so it can be said how long for.
+    //
+    // Worth a line in the log because it is the one thing here that a person
+    // experiences and cannot see: speaking over the end of an answer loses
+    // exactly this much of what was said, the recogniser is handed the
+    // remainder, and the result reads as a recognition failure - "it only got
+    // the end of my sentence" - when nothing was recognised wrongly at all.
+    let mut deaf_since: Option<SystemTime> = None;
+    // and how loud the room was for that whole time
+    let mut deaf_energy = 0.0f64;
+    let mut deaf_samples = 0.0f64;
+    let mut deaf_peak = 0.0f64;
+
     // how long this listening window lasts. It shortens to the follow-up
     // setting once a turn has been answered: waiting the full command timeout
     // again would leave the microphone open far longer than anyone expects
@@ -579,18 +592,67 @@ fn recognize_command(
 
         recorder::read_microphone(frame_buffer);
 
-        // our own reaction is playing into this microphone; discard rather than
-        // transcribe it, or the confirmation becomes the next "command"
-        //
-        // the clock is held back for as long as this lasts. An answer takes
-        // seconds to arrive and another ten to read out, and a window that
-        // counted down through all of it would be over before the assistant
-        // stopped talking - the follow-up seconds are meant to start when
-        // there is finally silence to speak into.
+        // Hold the clock while the assistant is busy. An answer takes seconds
+        // to arrive and another ten to read out, and a window that counted
+        // down through all of it would be over before the assistant stopped
+        // talking - the follow-up seconds are meant to start when there is
+        // finally silence to speak into.
         if llm_busy() {
             start = SystemTime::now();
             silence_frames = 0;
+        }
+
+        // Going deaf is a different question, and it used to share the answer
+        // to that one.
+        //
+        // The only reason to throw a frame away is that our own voice is in
+        // it - otherwise the confirmation becomes the next "command". That is
+        // true while something is coming out of the speakers and false the
+        // rest of the time, and "the assistant is busy" is not the same
+        // thing: between the thinking clip and the first syllable of a
+        // synthesised answer the room is silent, and on a slow model that
+        // silence has been measured at fourteen seconds. Every word spoken
+        // into it was discarded for no acoustic reason at all.
+        if audio::is_speaking() {
+            deaf_since.get_or_insert_with(SystemTime::now);
+            // Measured, not merely discarded.
+            //
+            // Speaking over an answer is the one thing half duplex cannot
+            // survive, and the only repair that does not need echo
+            // cancellation is to notice a second voice by how much louder the
+            // microphone gets while our own is already in it. Whether that is
+            // possible in a particular room is a number and not an opinion,
+            // and these are the only frames that can carry it: the assistant's
+            // own voice, plus whoever talks over it.
+            //
+            // Two answers, one with the room silent and one talked over, are
+            // therefore a measurement. If the levels do not separate, no
+            // threshold anybody picks will separate them either, and echo
+            // cancellation is the only way through.
+            let (energy, rms) = frame_energy(frame_buffer);
+            deaf_energy += energy;
+            deaf_samples += frame_buffer.len() as f64;
+            deaf_peak = deaf_peak.max(rms);
             continue;
+        }
+        if let Some(since) = deaf_since.take() {
+            let ms = since.elapsed().map(|d| d.as_millis()).unwrap_or(0);
+            // Only when it was long enough to have swallowed a word. A
+            // reaction clip is a second and nobody talks over it; an answer
+            // read out loud is the case worth naming, because anything said
+            // during it is not late, it is gone.
+            if ms >= 700 {
+                let mean = if deaf_samples > 0.0 {
+                    (deaf_energy / deaf_samples).sqrt()
+                } else {
+                    0.0
+                };
+                debug!("The microphone was deaf for {} ms while the assistant spoke - anything said into that is not in what follows (room {:.0} dBFS mean, {:.0} dBFS loudest frame)",
+                       ms, dbfs(mean), dbfs(deaf_peak));
+            }
+            deaf_energy = 0.0;
+            deaf_samples = 0.0;
+            deaf_peak = 0.0;
         }
         let processed = audio_processing::process(frame_buffer);
 
@@ -840,6 +902,35 @@ fn recognize_command(
     }
 }
 
+
+// The energy in one frame, and its RMS, both as a fraction of full scale.
+//
+// Separate from the loop and from each other so the two can be totalled over a
+// whole answer without keeping the audio: a sum of squares adds, an RMS does
+// not.
+fn frame_energy(frame: &[i16]) -> (f64, f64) {
+    if frame.is_empty() {
+        return (0.0, 0.0);
+    }
+    let energy: f64 = frame
+        .iter()
+        .map(|s| {
+            let v = *s as f64 / 32768.0;
+            v * v
+        })
+        .sum();
+    (energy, (energy / frame.len() as f64).sqrt())
+}
+
+// A level as decibels below full scale. Silence is reported as a floor rather
+// than as minus infinity, which no log line survives.
+fn dbfs(level: f64) -> f64 {
+    if level <= 0.0 {
+        -99.0
+    } else {
+        20.0 * level.log10()
+    }
+}
 
 fn process_text_command(text: &str, rt: &tokio::runtime::Runtime) {
     info!("Processing text command: {}", text);
@@ -1863,5 +1954,52 @@ mod conversation_tests {
         let mut c = Conversation::new();
         c.record(Instant::now(), "q".into(), "a".into(), 0);
         assert!(c.turns.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn silence_measures_as_the_floor_and_not_as_infinity() {
+        let (energy, rms) = frame_energy(&[0i16; 512]);
+        assert_eq!(energy, 0.0);
+        assert_eq!(rms, 0.0);
+        assert_eq!(dbfs(rms), -99.0);
+        // an empty frame must not divide by zero on the way to the log
+        assert_eq!(frame_energy(&[]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_full_scale_square_wave_measures_as_full_scale() {
+        let frame: Vec<i16> = (0..512).map(|i| if i % 2 == 0 { 32767 } else { -32767 }).collect();
+        let (_, rms) = frame_energy(&frame);
+        assert!((dbfs(rms)).abs() < 0.01, "expected 0 dBFS, got {:.2}", dbfs(rms));
+    }
+
+    #[test]
+    fn halving_the_signal_is_six_decibels_down() {
+        // the whole point of reporting this in decibels: a voice talking over
+        // the answer has to show up as a step that can be read at a glance
+        let loud: Vec<i16> = (0..512).map(|i| if i % 2 == 0 { 16384 } else { -16384 }).collect();
+        let quiet: Vec<i16> = (0..512).map(|i| if i % 2 == 0 { 8192 } else { -8192 }).collect();
+        let step = dbfs(frame_energy(&loud).1) - dbfs(frame_energy(&quiet).1);
+        assert!((step - 6.0206).abs() < 0.01, "expected 6 dB, got {:.2}", step);
+    }
+
+    #[test]
+    fn energy_totals_over_frames_the_way_the_loop_adds_it_up() {
+        // the loop keeps a running sum of squares and a running sample count,
+        // and divides once at the end. That has to give the same answer as
+        // measuring the whole run in one go, or the reported level drifts with
+        // the length of the answer.
+        let a: Vec<i16> = vec![10_000; 512];
+        let b: Vec<i16> = vec![2_000; 512];
+        let whole: Vec<i16> = a.iter().chain(b.iter()).copied().collect();
+
+        let running = (frame_energy(&a).0 + frame_energy(&b).0) / 1024.0;
+        let at_once = frame_energy(&whole).0 / 1024.0;
+        assert!((running.sqrt() - at_once.sqrt()).abs() < 1e-12);
     }
 }
