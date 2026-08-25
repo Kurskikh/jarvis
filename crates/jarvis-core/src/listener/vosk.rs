@@ -127,4 +127,26 @@ mod tests {
             assert!(best(s) < 40.0, "{} scored {:.1}%", s, best(s));
         }
     }
+
+    // The decoy words earn their place by being a better fit for the audio
+    // that was waking the assistant by mistake. They would stop earning it the
+    // moment one of them was ALSO close enough to the name to pass the gate:
+    // the detector would then fire on the decoy and nothing would have been
+    // gained. Cheap to assert, and invisible if it ever stops being true.
+    #[test]
+    fn no_decoy_in_the_grammar_can_pass_for_the_name() {
+        let phrases = crate::config::get_wake_phrases("ru");
+        for word in crate::config::get_wake_grammar("ru") {
+            if *word == "[unk]" || phrases.contains(word) {
+                continue;
+            }
+            let wc: Vec<char> = word.chars().collect();
+            let best = phrases.iter().map(|p| {
+                let pc: Vec<char> = p.chars().collect();
+                seqdiff::ratio(&pc, &wc)
+            }).fold(0.0, f64::max);
+            assert!(best < crate::config::VOSK_MIN_RATIO,
+                    "decoy '{}' scores {:.1}% against the wake phrases - it would wake the assistant itself", word, best);
+        }
+    }
 }

@@ -555,9 +555,26 @@ pub fn get_dialogue_exit_phrases(lang: &str) -> &'static [&'static str] {
 
 pub fn get_wake_grammar(lang: &str) -> &'static [&'static str] {
     match lang {
+        // Decoys, and they are the whole reason this works.
+        //
+        // A grammar this small has no way to say "that was not any of these":
+        // whatever is said gets mapped onto the words in it, so every word
+        // that is NOT here is heard as one that is. The names absorb the
+        // near-misses that used to wake the assistant - the log shows fourteen
+        // of them caught in one day - and cost nothing, because nothing is
+        // done when one of them wins.
+        //
+        // The second group is not names. Ordinary Russian words built on
+        // "жар" were being heard as the assistant's own name: "поджарили" and
+        // "пожарю" both woke it in the middle of a conversation about cooking.
+        // They are here to be a better fit for that audio than "джарвис" is,
+        // and they are far enough away that a real, mangled "джарвис" cannot
+        // be lost to them - which is asserted, not assumed, in the listener's
+        // tests.
         "ru" => &[
             "джарвис", "[unk]", "джон", "джони", "джей",
             "джонстон", "привет", "давай",
+            "пожар", "жарко", "жарить", "жарю",
         ],
         "ua" => &[
             "джарвіс", "[unk]", "джон", "джоні", "джей",
